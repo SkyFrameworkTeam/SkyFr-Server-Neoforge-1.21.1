@@ -1,0 +1,249 @@
+package com.skyframework.islandcore.island.lifecycle;
+
+import com.mojang.authlib.GameProfile;
+
+import com.skyframework.islandcore.IslandCoreMod;
+import com.skyframework.islandcore.api.island.Island;
+import com.skyframework.islandcore.api.island.IslandPermission;
+import com.skyframework.islandcore.api.network.ActionOutcome;
+import com.skyframework.islandcore.api.network.ActionReason;
+import com.skyframework.islandcore.island.model.IslandMember;
+import com.skyframework.islandcore.island.model.IslandRole;
+
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.network.chat.Component;
+
+import java.time.Instant;
+import java.util.EnumSet;
+import java.util.Optional;
+import java.util.UUID;
+
+/**
+ * Extracted from IslandCommand (Sprint "acciones de isla"): membership actions
+ * (invite/accept/trust/untrust/kick). Like IslandActionService, no method here messages the
+ * *acting* player — but unlike it, some methods here DO message a *third party* directly
+ * (the invitee, the kicked player): that's a real side effect that must happen regardless of
+ * whether the actor came from a command or a network packet, not presentation formatting for
+ * the actor's own reply.
+ */
+public final class MembershipService {
+
+	private MembershipService() {
+	}
+
+	// data = whether the target was online at invite time (Boolean), so the caller can pick
+	// between the two existing "invitation sent"/"invitation registered" messages.
+	public static ActionOutcome<Boolean> invite(ServerPlayer inviter, UUID targetUuid, MinecraftServer server) {
+		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(inviter.getUUID());
+		if (maybeIsland.isEmpty()) {
+			return ActionOutcome.fail(ActionReason.NO_ISLAND);
+		}
+		Island island = maybeIsland.get();
+
+		ActionOutcome<Void> inviteOutcome = IslandCoreMod.INVITE_MANAGER.invite(island.getIslandId(), inviter.getUUID(), targetUuid);
+		if (!inviteOutcome.success()) {
+			return ActionOutcome.fail(inviteOutcome.reason());
+		}
+
+		ServerPlayer targetPlayer = server.getPlayerList().getPlayer(targetUuid);
+		if (targetPlayer != null) {
+			targetPlayer.sendSystemMessage(Component.literal(inviter.getGameProfile().getName()
+					+ " te ha invitado a su isla. Usa /island accept en los próximos 5 minutos para unirte."));
+		}
+
+		return ActionOutcome.ok(targetPlayer != null);
+	}
+
+	// Network-only entry point for MemberInviteC2S, which has no Brigadier GameProfileArgumentType
+	// to resolve a name to a UUID for free like the text command does (targetProfile.getId()).
+	// Checks online players by exact name first (instant, no disk/network I/O), then falls back to
+	// the server's offline profile cache — the same fallback GameProfileArgumentType itself relies
+	// on for names that aren't currently online.
+	public static ActionOutcome<Boolean> inviteByName(ServerPlayer inviter, String targetName, MinecraftServer server) {
+		Optional<UUID> targetUuid = resolveUuid(targetName, server);
+		if (targetUuid.isEmpty()) {
+			return ActionOutcome.fail(ActionReason.TARGET_NOT_FOUND);
+		}
+
+		return invite(inviter, targetUuid.get(), server);
+	}
+
+	// Exposed for other network-only admin paths (SpawnAuthorizedPlayerAddC2S) that, like
+	// inviteByName above, have no Brigadier GameProfileArgumentType to resolve a name for free.
+	public static Optional<UUID> resolvePlayerUuid(String name, MinecraftServer server) {
+		return resolveUuid(name, server);
+	}
+
+	private static Optional<UUID> resolveUuid(String name, MinecraftServer server) {
+		ServerPlayer online = server.getPlayerList().getPlayerByName(name);
+		if (online != null) {
+			return Optional.of(online.getUUID());
+		}
+
+		return server.getProfileCache().get(name).map(GameProfile::getId);
+	}
+
+	public static ActionOutcome<Island> acceptInvite(ServerPlayer player, MinecraftServer server) {
+		Optional<Island> maybeIsland = IslandCoreMod.INVITE_MANAGER.acceptInvite(player.getUUID());
+		if (maybeIsland.isEmpty()) {
+			return ActionOutcome.fail(ActionReason.NO_PENDING_INVITE);
+		}
+
+		Island island = maybeIsland.get();
+		ServerPlayer owner = server.getPlayerList().getPlayer(island.getOwnerUuid());
+		if (owner != null) {
+			owner.sendSystemMessage(Component.literal(
+					player.getGameProfile().getName() + " ha aceptado tu invitación y se ha unido a tu isla."));
+		}
+
+		return ActionOutcome.ok(island);
+	}
+
+	// Promotes to CO_OWNER unconditionally: whether targetUuid was already a plain MEMBER or not a
+	// member at all, they end up CO_OWNER — addMember's upsert-by-playerUuid handles both cases the
+	// same way, no invitation/acceptance needed (matches trust's historical no-invite behavior).
+	// CO_OWNER is a hard-coded always-ALLOW role (see IslandRole's javadoc) — this is the only way
+	// into it.
+	public static ActionOutcome<Void> trust(ServerPlayer executor, UUID targetUuid) {
+		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(executor.getUUID());
+		if (maybeIsland.isEmpty()) {
+			return ActionOutcome.fail(ActionReason.NO_ISLAND);
+		}
+
+		Island island = maybeIsland.get();
+		IslandMember member = new IslandMember(targetUuid, IslandRole.CO_OWNER, Instant.now(), EnumSet.noneOf(IslandPermission.class));
+		IslandCoreMod.ISLAND_REGISTRY.addMember(island.getIslandId(), member);
+
+		return ActionOutcome.ok();
+	}
+
+	// Demotes an existing CO_OWNER back to plain MEMBER — does NOT remove them from the island (use
+	// kick()/removeMember() for that). Fails with NOT_CO_OWNER if the target isn't currently
+	// CO_OWNER: untrust only ever applies to someone who actually holds that status, there's
+	// nothing to "un-trust" about a plain MEMBER.
+	public static ActionOutcome<Void> untrust(ServerPlayer executor, UUID targetUuid) {
+		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(executor.getUUID());
+		if (maybeIsland.isEmpty()) {
+			return ActionOutcome.fail(ActionReason.NO_ISLAND);
+		}
+
+		Island island = maybeIsland.get();
+		if (island.getRoleOf(targetUuid) != IslandRole.CO_OWNER) {
+			return ActionOutcome.fail(ActionReason.NOT_CO_OWNER);
+		}
+
+		IslandMember member = new IslandMember(targetUuid, IslandRole.MEMBER, Instant.now(), EnumSet.noneOf(IslandPermission.class));
+		IslandCoreMod.ISLAND_REGISTRY.addMember(island.getIslandId(), member);
+
+		return ActionOutcome.ok();
+	}
+
+	// The network entry point for MembersScreen's "Trust" toggle button (MemberTrustC2S): promotes
+	// a MEMBER to CO_OWNER or demotes a CO_OWNER back to MEMBER depending on the target's CURRENT
+	// role, so one button/one packet covers both directions. Fails with NOT_A_MEMBER for anyone who
+	// is neither (ALLY/VISITOR) — the client only ever shows this button on MEMBER/CO_OWNER rows,
+	// so that's a defensive guard, not an expected path.
+	public static ActionOutcome<Void> toggleCoOwner(ServerPlayer executor, UUID targetUuid) {
+		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(executor.getUUID());
+		if (maybeIsland.isEmpty()) {
+			return ActionOutcome.fail(ActionReason.NO_ISLAND);
+		}
+
+		IslandRole role = maybeIsland.get().getRoleOf(targetUuid);
+		if (role == IslandRole.CO_OWNER) {
+			return untrust(executor, targetUuid);
+		}
+		if (role == IslandRole.MEMBER) {
+			return trust(executor, targetUuid);
+		}
+		return ActionOutcome.fail(ActionReason.NOT_A_MEMBER);
+	}
+
+	// Same shape as trust()/untrust() above, but assigning/removing the ALLY role instead of
+	// CO_OWNER — used by "/island ally add/remove" (see IslandRole for how ALLY differs: same
+	// per-flag defaults as VISITOR unless the owner opens a flag for it explicitly).
+	public static ActionOutcome<Void> allyAdd(ServerPlayer executor, UUID targetUuid) {
+		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(executor.getUUID());
+		if (maybeIsland.isEmpty()) {
+			return ActionOutcome.fail(ActionReason.NO_ISLAND);
+		}
+
+		Island island = maybeIsland.get();
+		IslandMember member = new IslandMember(targetUuid, IslandRole.ALLY, Instant.now(), EnumSet.noneOf(IslandPermission.class));
+		IslandCoreMod.ISLAND_REGISTRY.addMember(island.getIslandId(), member);
+
+		return ActionOutcome.ok();
+	}
+
+	public static ActionOutcome<Void> allyRemove(ServerPlayer executor, UUID targetUuid) {
+		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(executor.getUUID());
+		if (maybeIsland.isEmpty()) {
+			return ActionOutcome.fail(ActionReason.NO_ISLAND);
+		}
+
+		Island island = maybeIsland.get();
+		IslandCoreMod.ISLAND_REGISTRY.removeMember(island.getIslandId(), targetUuid);
+
+		return ActionOutcome.ok();
+	}
+
+	// Admin-scoped variants of trust()/untrust() above, for the Spawn admin block: they operate on
+	// an explicit island rather than resolving it from the executor's own ownership, since the
+	// operator running /island admin spawn trust/untrust never owns the Spawn island themselves.
+	// Unlike the player-facing untrust() (which only demotes CO_OWNER -> MEMBER, see above),
+	// untrustOnIsland keeps its original simpler full-removal semantics: Spawn's "authorized to
+	// build" list has no separate MEMBER tier of its own in practice, so there's nothing useful to
+	// demote into — same upsert-safe addMember/removeMember underneath, so re-trusting or
+	// untrusting a non-member is a harmless no-op either way.
+	public static void trustOnIsland(Island island, UUID targetUuid) {
+		IslandMember member = new IslandMember(targetUuid, IslandRole.CO_OWNER, Instant.now(), EnumSet.noneOf(IslandPermission.class));
+		IslandCoreMod.ISLAND_REGISTRY.addMember(island.getIslandId(), member);
+	}
+
+	public static void untrustOnIsland(Island island, UUID targetUuid) {
+		IslandCoreMod.ISLAND_REGISTRY.removeMember(island.getIslandId(), targetUuid);
+	}
+
+	public static ActionOutcome<Void> kick(ServerPlayer executor, UUID targetUuid, MinecraftServer server) {
+		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(executor.getUUID());
+		if (maybeIsland.isEmpty()) {
+			return ActionOutcome.fail(ActionReason.NO_ISLAND);
+		}
+
+		Island island = maybeIsland.get();
+		IslandRole role = island.getRoleOf(targetUuid);
+		if (role != IslandRole.MEMBER && role != IslandRole.CO_OWNER) {
+			return ActionOutcome.fail(ActionReason.NOT_A_MEMBER);
+		}
+
+		IslandCoreMod.ISLAND_REGISTRY.removeMember(island.getIslandId(), targetUuid);
+
+		ServerPlayer targetPlayer = server.getPlayerList().getPlayer(targetUuid);
+		if (targetPlayer != null
+				&& targetPlayer.level().dimension().equals(island.getDimension())
+				&& island.getBounds().contains(targetPlayer.blockPosition())) {
+			EvictionTargetResolver.resolve(server)
+					.ifPresent(target -> new com.skyframework.islandcore.teleport.VanillaTeleportBackend()
+							.teleport(targetPlayer, target.world(), target.pos()));
+		}
+
+		if (targetPlayer != null) {
+			targetPlayer.sendSystemMessage(Component.literal(
+					"Has sido expulsado de la isla de " + executor.getGameProfile().getName() + "."));
+		}
+
+		return ActionOutcome.ok();
+	}
+
+	// MemberRemoveC2S (network only — see net/island/MemberRemoveC2S): full expulsion regardless of
+	// the target's role (MEMBER or CO_OWNER) — matches kick()'s behavior exactly, now that
+	// promoting/demoting between MEMBER and CO_OWNER has its own dedicated button/packet
+	// (MemberTrustC2S -> toggleCoOwner above). Previously this branched on role and only demoted a
+	// CO_OWNER (then TRUSTED) instead of expelling them; that responsibility moved to toggleCoOwner,
+	// so this is now a thin pass-through kept only because the client still addresses it by this
+	// packet name.
+	public static ActionOutcome<Void> removeMember(ServerPlayer executor, UUID targetUuid, MinecraftServer server) {
+		return kick(executor, targetUuid, server);
+	}
+}
