@@ -5,16 +5,17 @@ import com.skyframework.islandcore.api.island.Island;
 import com.skyframework.islandcore.protection.flag.FlagRegistry;
 import com.skyframework.islandcore.protection.flag.FlagResolver;
 
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.resources.ResourceKey;
-import net.minecraft.core.registries.Registries;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.Level;
 
 import java.util.Optional;
+import java.util.UUID;
 
 // Called from IslandCoreMod's second LivingIncomingDamageEvent listener.
 //
@@ -46,13 +47,25 @@ public final class DamageProtectionListener {
 			return true;
 		}
 
+		Island island = maybeIsland.get();
+
 		Entity attacker = source.getEntity();
 		if (attacker == null) {
-			// No attacker: fall damage, lava, drowning, starvation, etc. Not part of this system.
+			// DamageSources.magic() (used by periodic harmful-status-effect ticks, e.g. poison from a
+			// thrown potion) carries no attacker at all, unlike an instant potion effect's
+			// indirectMagic() — see StatusEffectSourceTracker's class doc for the full picture. Check
+			// the tracker before falling back to "no attacker, not part of this system" so PVP_DAMAGE
+			// still blocks this the same way it blocks a direct hit.
+			if (victim instanceof Player) {
+				Optional<UUID> hostileEffectAttacker = StatusEffectSourceTracker.getHostileEffectSource(victim.getUUID());
+				if (hostileEffectAttacker.isPresent()) {
+					return FlagResolver.resolveGlobal(island, FlagRegistry.PVP_DAMAGE);
+				}
+			}
+			// No attacker and no tracked hostile-effect source: fall damage, lava, drowning,
+			// starvation, etc. Not part of this system.
 			return true;
 		}
-
-		Island island = maybeIsland.get();
 
 		if (attacker instanceof Player && victim instanceof Player) {
 			// PVP is symmetric: no ENTITIES bypass here, not even for the owner — see class javadoc.

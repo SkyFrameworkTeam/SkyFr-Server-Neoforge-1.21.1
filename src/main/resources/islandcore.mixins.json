@@ -8,6 +8,8 @@
 		"FarmlandTrampleMixin",
 		"FireSpreadMixin",
 		"LightningFireMixin",
+		"LivingEntityStatusEffectSourceMixin",
+		"PistonHandlerMixin",
 		"PortalDestinationMixin",
 		"PortalIgnitionMixin",
 		"RaidManagerMixin",

@@ -1,9 +1,9 @@
 package com.skyframework.islandcore.teleport;
 
-import net.minecraft.resources.ResourceKey;
 import net.minecraft.core.BlockPos;
-import net.minecraft.world.phys.Vec3;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.UUID;
 
@@ -14,7 +14,23 @@ class PendingTeleport {
 	enum Kind {
 		HOME,
 		SPAWN,
-		FARMING
+		FARMING,
+		// Any DIMENSION_REGISTRY dimension reached through the dynamic teleports section, other
+		// than the one matching FarmingConfig's own target (that one still uses Kind.FARMING — see
+		// TeleportManagerImpl#requestDimensionTeleport).
+		DIMENSION,
+		// Neither the target dimension's own landing point nor a nearby safe spot could be found
+		// (see TeleportManagerImpl#resolveDynamicDimensionLanding) — the player was bounced to their
+		// own island's home or the Spawn island's home instead, as a safety net, same "no cooldown,
+		// this wasn't a deliberate action" reasoning as VoidRescueListener. Kept distinct from
+		// Kind.HOME/Kind.SPAWN so completeTeleport doesn't charge either cooldown for an involuntary
+		// rescue.
+		RESCUE_HOME,
+		RESCUE_SPAWN,
+		// Fixed teleport to the real vanilla minecraft:overworld dimension (TeleportsScreen's
+		// "Overworld" button) — kept distinct from DIMENSION since it's never a DIMENSION_REGISTRY
+		// entry, so completeTeleport's DIMENSION case display-name lookup would never find it.
+		OVERWORLD
 	}
 
 	final UUID playerUuid;

@@ -19,6 +19,7 @@ import com.skyframework.islandcore.island.biome.BiomeTierRegistryImpl;
 import com.skyframework.islandcore.island.biome.IslandBiomeApplier;
 import com.skyframework.islandcore.island.entity.IslandEntityTracker;
 import com.skyframework.islandcore.island.entity.IslandEntityTrackerImpl;
+import com.skyframework.islandcore.island.lifecycle.AllyLocationBroadcaster;
 import com.skyframework.islandcore.island.lifecycle.IslandDeletionService;
 import com.skyframework.islandcore.island.lifecycle.IslandDeletionServiceImpl;
 import com.skyframework.islandcore.island.lifecycle.InviteManager;
@@ -33,12 +34,15 @@ import com.skyframework.islandcore.party.registry.PartyRegistryImpl;
 import com.skyframework.islandcore.permission.FallbackPermissionProvider;
 import com.skyframework.islandcore.permission.LuckPermsProvider;
 import com.skyframework.islandcore.player.FirstJoinTracker;
+import com.skyframework.islandcore.player.PlayerLocationSharingConfig;
+import com.skyframework.islandcore.player.RespawnPriorityListener;
 import com.skyframework.islandcore.player.StarterKitConfig;
 import com.skyframework.islandcore.player.rescue.VoidRescueConfig;
 import com.skyframework.islandcore.player.rescue.VoidRescueListener;
 import com.skyframework.islandcore.portal.PortalLinkConfig;
 import com.skyframework.islandcore.protection.AccessController;
 import com.skyframework.islandcore.protection.AccessControllerImpl;
+import com.skyframework.islandcore.protection.AdminOverrideState;
 import com.skyframework.islandcore.protection.DamageProtectionListener;
 import com.skyframework.islandcore.protection.DeniedActionThrottler;
 import com.skyframework.islandcore.protection.ProtectionListeners;
@@ -51,8 +55,11 @@ import com.skyframework.islandcore.rtp.RtpConfig;
 import com.skyframework.islandcore.spawn.SpawnCommand;
 import com.skyframework.islandcore.spawn.SpawnConfig;
 import com.skyframework.islandcore.teleport.TeleportManager;
+import com.skyframework.islandcore.teleport.PlayerLastPositionListener;
+import com.skyframework.islandcore.teleport.PlayerLastPositionStore;
 import com.skyframework.islandcore.teleport.TeleportManagerImpl;
 import com.skyframework.islandcore.teleport.VanillaTeleportBackend;
+import com.skyframework.islandcore.util.ServerLang;
 
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
@@ -76,14 +83,10 @@ import org.slf4j.LoggerFactory;
 
 import java.util.Optional;
 
-// NEOFORGE PORT STATUS: the island/protection/party/config/teleport/dimension/network core is
-// fully ported and wired below, including a from-scratch native NeoForge replacement for the
-// Fabric-only Fantasy library (see NativeDimensionRuntimeProvider) and the full ~88-file network
-// payload layer (ServerPacketHandlers, rebuilt around RegisterPayloadHandlersEvent/PayloadRegistrar
-// instead of Fabric's ServerPlayNetworking). Still TODO: the 9 Mixins declared in
-// islandcore.mixins.json (their .java files aren't ported yet). That doesn't block compiling or
-// running what IS wired below; only the client-side mod (SkyFr-Cliente-Neoforge) is still an empty
-// shell.
+// NEOFORGE PORT: mirrors the Fabric project's IslandCoreMod (protocol 6). Entry point differences only:
+// @Mod constructor instead of ModInitializer#onInitialize(), NeoForge event buses instead of Fabric
+// callbacks, NativeDimensionRuntimeProvider instead of the Fabric-only Fantasy library, and
+// ServerPacketHandlers registered through RegisterPayloadHandlersEvent (PayloadRegistrar).
 @Mod(IslandCoreMod.MOD_ID)
 public class IslandCoreMod {
 	public static final String MOD_ID = "islandcore";
@@ -118,6 +121,9 @@ public class IslandCoreMod {
 	public static DimensionRegistry DIMENSION_REGISTRY;
 	public static VanillaResetService VANILLA_RESET_SERVICE;
 	public static FirstJoinTracker FIRST_JOIN_TRACKER;
+	public static PlayerLocationSharingConfig LOCATION_SHARING_CONFIG;
+	public static AllyLocationBroadcaster ALLY_LOCATION_BROADCASTER;
+	public static PlayerLastPositionStore PLAYER_LAST_POSITION_STORE;
 
 	// NeoForge constructs the @Mod class itself and passes the mod event bus (registry/lifecycle
 	// events) — this replaces Fabric's ModInitializer#onInitialize() as the single entry point.
@@ -155,9 +161,15 @@ public class IslandCoreMod {
 		// registries above.
 		PARTY_REGISTRY = new PartyRegistryImpl();
 		PARTY_INVITE_MANAGER = new PartyInviteManagerImpl();
+		LOCATION_SHARING_CONFIG = new PlayerLocationSharingConfig();
+		ALLY_LOCATION_BROADCASTER = new AllyLocationBroadcaster();
+		NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> ALLY_LOCATION_BROADCASTER.tickAll(event.getServer()));
 
 		ProtectionListeners.register();
 		DeniedActionThrottler.register();
+		AdminOverrideState.register();
+		PlayerLastPositionListener.register();
+		RespawnPriorityListener.register();
 		IslandCommand.register();
 		DimensionCommand.register();
 		PartyCommand.register();
@@ -186,6 +198,7 @@ public class IslandCoreMod {
 		DELETION_SERVICE = new IslandDeletionServiceImpl(new VanillaTeleportBackend());
 		NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> DELETION_SERVICE.tickAll());
 
+		PLAYER_LAST_POSITION_STORE = new PlayerLastPositionStore();
 		TELEPORT_MANAGER = new TeleportManagerImpl(new VanillaTeleportBackend());
 		NeoForge.EVENT_BUS.addListener((ServerTickEvent.Post event) -> TELEPORT_MANAGER.tickAll());
 
@@ -246,12 +259,14 @@ public class IslandCoreMod {
 
 				boolean teleported = new VanillaTeleportBackend().teleport(player, world, spawnIsland.getHomeLocation());
 				if (teleported && firstJoin) {
-					player.sendSystemMessage(Component.literal("¡Bienvenido a SkyFramework! Usa /island create para crear tu propia isla."));
+					player.sendSystemMessage(ServerLang.of(player,
+							"¡Bienvenido a SkyFramework! Usa /island create para crear tu propia isla.",
+							"Welcome to SkyFramework! Use /island create to create your own island."));
 				}
 			});
 		});
 
-		LOGGER.info("IslandCore (NeoForge port) initialized — core island/protection/party layer only, see class javadoc for what's still pending.");
+		LOGGER.info("IslandCore (NeoForge) initialized, network protocol {}.", com.skyframework.islandcore.net.NetworkChannels.PROTOCOL_VERSION);
 	}
 
 	public static ResourceLocation id(String path) {

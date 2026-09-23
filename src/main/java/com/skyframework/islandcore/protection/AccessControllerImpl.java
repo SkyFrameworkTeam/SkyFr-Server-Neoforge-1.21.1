@@ -11,15 +11,15 @@ import com.skyframework.islandcore.protection.flag.Flag;
 import com.skyframework.islandcore.protection.flag.FlagRegistry;
 import com.skyframework.islandcore.protection.flag.FlagResolver;
 
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.resources.ResourceKey;
-import net.minecraft.core.registries.Registries;
-import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.level.ServerLevel;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
 
 import java.util.Optional;
@@ -72,6 +72,12 @@ public class AccessControllerImpl implements AccessController {
 	// useAllowBreak selects which ExceptionGroup field a matching exception decides with:
 	// isAllowBreak() for canBreak, isAllowInteract() for canPlace/canInteractBlock/canOpenContainer.
 	private boolean checkBlock(UUID playerUuid, ServerLevel world, BlockPos pos, IslandPermission permission, Flag flag, boolean useAllowBreak) {
+		// /island admin override on: full OWNER-everywhere bypass, checked before even the
+		// dimension/island lookups below so it also covers the Spawn island.
+		if (AdminOverrideState.isActive(playerUuid)) {
+			return true;
+		}
+
 		if (!world.dimension().equals(ISLANDS_DIMENSION)) {
 			return true;
 		}
@@ -114,6 +120,11 @@ public class AccessControllerImpl implements AccessController {
 	}
 
 	private boolean checkEntity(UUID playerUuid, ServerLevel world, Entity entity, boolean useAllowBreak) {
+		// Same override bypass as checkBlock above, checked first for the same reason.
+		if (AdminOverrideState.isActive(playerUuid)) {
+			return true;
+		}
+
 		if (!world.dimension().equals(ISLANDS_DIMENSION)) {
 			return true;
 		}

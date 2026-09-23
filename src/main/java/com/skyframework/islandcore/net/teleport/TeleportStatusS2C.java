@@ -9,19 +9,30 @@ import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.codec.ByteBufCodecs;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 // Built by TeleportStatusBuilder from TeleportManager's new cooldown-peek getters and the
 // existing Spawn/Rtp/FarmingConfig enabled flags — this record only carries data.
-public record TeleportStatusS2C(StatusEntry home, StatusEntry spawn, StatusEntry rtp, StatusEntry farming) implements CustomPacketPayload {
+//
+// Wire format changed (Sprint "teletransportes dinámicos"): the fixed 4th field `farming`
+// (StatusEntry) was replaced by `dimensions` (List<DimensionTeleportEntry>) — one entry per
+// DIMENSION_REGISTRY dimension instead of a single hardcoded farming slot. This is a client/server
+// protocol break for IslandCoreClient's own copy of this record, which needs the matching update
+// made separately in that project. Final field order: home, spawn, rtp, dimensions.
+public record TeleportStatusS2C(StatusEntry home, StatusEntry spawn, StatusEntry rtp, List<DimensionTeleportEntry> dimensions) implements CustomPacketPayload {
 
 	public static final CustomPacketPayload.Type<TeleportStatusS2C> TYPE = new CustomPacketPayload.Type<>(NetworkChannels.TELEPORT_STATUS_S2C);
+
+	private static final StreamCodec<RegistryFriendlyByteBuf, List<DimensionTeleportEntry>> DIMENSION_LIST_CODEC =
+			ByteBufCodecs.collection(ArrayList::new, DimensionTeleportEntry.CODEC);
 
 	public static final StreamCodec<RegistryFriendlyByteBuf, TeleportStatusS2C> CODEC = StreamCodec.composite(
 			StatusEntry.CODEC, TeleportStatusS2C::home,
 			StatusEntry.CODEC, TeleportStatusS2C::spawn,
 			StatusEntry.CODEC, TeleportStatusS2C::rtp,
-			StatusEntry.CODEC, TeleportStatusS2C::farming,
+			DIMENSION_LIST_CODEC, TeleportStatusS2C::dimensions,
 			TeleportStatusS2C::new
 	);
 
@@ -51,5 +62,21 @@ public record TeleportStatusS2C(StatusEntry home, StatusEntry spawn, StatusEntry
 		public static StatusEntry unavailable(String reasonKey) {
 			return new StatusEntry(false, 0, Optional.of(reasonKey));
 		}
+	}
+
+	// id is the dimension's Identifier.toString() (e.g. "islandcore:farming") — the client sends it
+	// straight back verbatim in TeleportRequestC2S's new dimensionId field, so there's no id<->name
+	// resolution to keep in sync on either side. enabled/cooldownRemainingSeconds mirror the farming
+	// dimension's own cooldown when isFarmingTarget (see TeleportStatusBuilder); every other
+	// dimension has no cooldown of its own, so enabled is always true and cooldownRemainingSeconds 0.
+	public record DimensionTeleportEntry(String id, String displayName, boolean enabled, long cooldownRemainingSeconds) {
+
+		public static final StreamCodec<RegistryFriendlyByteBuf, DimensionTeleportEntry> CODEC = StreamCodec.composite(
+				ByteBufCodecs.STRING_UTF8, DimensionTeleportEntry::id,
+				ByteBufCodecs.STRING_UTF8, DimensionTeleportEntry::displayName,
+				ByteBufCodecs.BOOL, DimensionTeleportEntry::enabled,
+				ByteBufCodecs.VAR_LONG, DimensionTeleportEntry::cooldownRemainingSeconds,
+				DimensionTeleportEntry::new
+		);
 	}
 }

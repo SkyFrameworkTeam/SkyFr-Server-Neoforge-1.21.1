@@ -1,23 +1,24 @@
 package com.skyframework.islandcore.island.biome;
 
 import com.skyframework.islandcore.island.model.IslandBounds;
+import com.skyframework.islandcore.util.ServerLang;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.QuartPos;
 import net.minecraft.core.SectionPos;
-import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeResolver;
 import net.minecraft.world.level.biome.Climate;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.RandomState;
+
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
@@ -125,7 +126,8 @@ public class IslandBiomeApplier {
 
 		ServerPlayer player = server.getPlayerList().getPlayer(job.requestedBy);
 		if (player != null) {
-			player.sendSystemMessage(Component.literal("El cambio de bioma de tu isla ha terminado."));
+			player.sendSystemMessage(ServerLang.of(player,
+					"El cambio de bioma de tu isla ha terminado.", "Your island's biome change has finished."));
 		}
 	}
 

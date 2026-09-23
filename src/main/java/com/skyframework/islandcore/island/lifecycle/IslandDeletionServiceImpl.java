@@ -6,25 +6,25 @@ import com.skyframework.islandcore.api.island.IslandState;
 import com.skyframework.islandcore.island.model.IslandBounds;
 import com.skyframework.islandcore.island.model.IslandData;
 import com.skyframework.islandcore.teleport.TeleportBackend;
+import com.skyframework.islandcore.util.ServerLang;
+
+import net.minecraft.ChatFormatting;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Holder;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.block.Blocks;
 
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
-
-import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.player.Player;
-import net.minecraft.resources.ResourceKey;
-import net.minecraft.core.registries.Registries;
-import net.minecraft.core.Holder;
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.level.ServerLevel;
-import net.minecraft.network.chat.Component;
-import net.minecraft.ChatFormatting;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.core.BlockPos;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.level.biome.Biome;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -169,9 +169,10 @@ public class IslandDeletionServiceImpl implements IslandDeletionService {
 			return;
 		}
 
-		player.sendSystemMessage(
-				Component.literal("Isla se eliminará en " + secondsRemaining + "s - /island delete confirm para confirmar")
-						.withStyle(ChatFormatting.RED),
+		player.displayClientMessage(
+				ServerLang.of(player, "Isla se eliminará en " + secondsRemaining + "s - /island delete confirm para confirmar",
+								"Island will be deleted in " + secondsRemaining + "s - /island delete confirm to confirm")
+						.copy().withStyle(ChatFormatting.RED),
 				true);
 	}
 
@@ -181,7 +182,8 @@ public class IslandDeletionServiceImpl implements IslandDeletionService {
 			return;
 		}
 
-		player.sendSystemMessage(Component.literal("La solicitud de borrado ha caducado. Tu isla sigue intacta."), false);
+		player.sendSystemMessage(ServerLang.of(player,
+				"La solicitud de borrado ha caducado. Tu isla sigue intacta.", "The deletion request has expired. Your island is still intact."));
 	}
 
 	private void tickBlockClearing() {
@@ -201,7 +203,7 @@ public class IslandDeletionServiceImpl implements IslandDeletionService {
 			}
 
 			while (budget > 0 && !job.isDone()) {
-				world.setBlock(job.currentPos(), Blocks.AIR.defaultBlockState(), 3);
+				world.setBlockAndUpdate(job.currentPos(), Blocks.AIR.defaultBlockState());
 				job.advance();
 				budget--;
 			}

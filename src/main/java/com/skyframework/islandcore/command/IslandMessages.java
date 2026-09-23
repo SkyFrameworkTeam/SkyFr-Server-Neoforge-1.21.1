@@ -9,15 +9,17 @@ import com.skyframework.islandcore.island.entity.EntityCategory;
 import com.skyframework.islandcore.island.model.IslandBounds;
 import com.skyframework.islandcore.island.model.IslandMember;
 import com.skyframework.islandcore.island.model.IslandRole;
+import com.skyframework.islandcore.util.ServerLang;
 
-import net.minecraft.server.MinecraftServer;
+import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.ClickEvent;
+import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.HoverEvent;
 import net.minecraft.network.chat.MutableComponent;
-import net.minecraft.network.chat.Component;
-import net.minecraft.ChatFormatting;
-import net.minecraft.core.BlockPos;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
 
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -74,7 +76,8 @@ public final class IslandMessages {
 	// Player-facing view: readable, no raw UUIDs/bounds, technical fields omitted.
 	// Used by /island info and /island list.
 	public static void sendIslandSummaryPlayer(CommandSourceStack source, Island island) {
-		source.sendSuccess(() -> Component.literal("=== Tu Isla ===").withStyle(ChatFormatting.BOLD, ChatFormatting.AQUA), false);
+		ServerPlayer player = source.getPlayer();
+		source.sendSuccess(() -> ServerLang.of(player, "=== Tu Isla ===", "=== Your Island ===").copy().withStyle(ChatFormatting.BOLD, ChatFormatting.AQUA), false);
 
 		int currentSize = island.getIslandSize();
 		int maxSize = IslandCoreMod.PERMISSION_PROVIDER.getHighestSizeAllowed(island.getOwnerUuid());
@@ -86,7 +89,7 @@ public final class IslandMessages {
 		source.sendSuccess(() -> labeled("Home: ", home.getX() + ", " + home.getY() + ", " + home.getZ()), false);
 
 		if (island.getState() != IslandState.ACTIVE) {
-			source.sendSuccess(() -> Component.literal("Estado: " + island.getState()).withStyle(ChatFormatting.RED), false);
+			source.sendSuccess(() -> ServerLang.of(player, "Estado: " + island.getState(), "State: " + island.getState()).copy().withStyle(ChatFormatting.RED), false);
 		}
 
 		sendMembersSectionPlayer(source, island);
@@ -160,11 +163,12 @@ public final class IslandMessages {
 	}
 
 	private static void sendMembersSectionPlayer(CommandSourceStack source, Island island) {
-		source.sendSuccess(() -> Component.literal("Miembros").withStyle(ChatFormatting.BOLD, ChatFormatting.GOLD), false);
+		ServerPlayer player = source.getPlayer();
+		source.sendSuccess(() -> ServerLang.of(player, "Miembros", "Members").copy().withStyle(ChatFormatting.BOLD, ChatFormatting.GOLD), false);
 
 		MinecraftServer server = source.getServer();
 
-		source.sendSuccess(() -> memberLine(server, island.getOwnerUuid(), IslandRole.OWNER), false);
+		source.sendSuccess(() -> memberLine(player, server, island.getOwnerUuid(), IslandRole.OWNER), false);
 
 		for (IslandMember member : island.getMembers()) {
 			// VISITOR/DENIED aren't explicit members: nothing currently stores them here, but
@@ -172,14 +176,15 @@ public final class IslandMessages {
 			if (member.role() != IslandRole.MEMBER && member.role() != IslandRole.CO_OWNER) {
 				continue;
 			}
-			source.sendSuccess(() -> memberLine(server, member.playerUuid(), member.role()), false);
+			source.sendSuccess(() -> memberLine(player, server, member.playerUuid(), member.role()), false);
 		}
 	}
 
-	private static Component memberLine(MinecraftServer server, UUID playerUuid, IslandRole role) {
+	private static Component memberLine(ServerPlayer player, MinecraftServer server, UUID playerUuid, IslandRole role) {
 		String name = resolveName(server, playerUuid);
-		return Component.literal("- " + name + " ")
-				.append(Component.literal("(" + role + ")").withStyle(roleColor(role)));
+		return ServerLang.of(player, "- " + name + " ", "- " + name + " ")
+				.copy()
+				.append(ServerLang.of(player, "(" + role + ")", "(" + role + ")").copy().withStyle(roleColor(role)));
 	}
 
 	private static Component memberLineAdmin(MinecraftServer server, UUID playerUuid, IslandRole role) {

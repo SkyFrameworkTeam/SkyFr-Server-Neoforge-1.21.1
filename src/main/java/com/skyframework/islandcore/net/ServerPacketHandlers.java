@@ -83,8 +83,6 @@ import com.skyframework.islandcore.net.member.MemberInviteC2S;
 import com.skyframework.islandcore.net.member.MemberRemoveC2S;
 import com.skyframework.islandcore.net.member.MemberTrustC2S;
 import com.skyframework.islandcore.net.party.PartyAcceptC2S;
-import com.skyframework.islandcore.net.party.PartyAllyAddC2S;
-import com.skyframework.islandcore.net.party.PartyAllyRemoveC2S;
 import com.skyframework.islandcore.net.party.PartyCreateC2S;
 import com.skyframework.islandcore.net.party.PartyDisbandConfirmC2S;
 import com.skyframework.islandcore.net.party.PartyDisbandRequestC2S;
@@ -105,21 +103,35 @@ import com.skyframework.islandcore.protection.flag.FlagCategory;
 import com.skyframework.islandcore.protection.flag.FlagPreset;
 import com.skyframework.islandcore.protection.flag.FlagRegistry;
 import com.skyframework.islandcore.protection.flag.TriState;
+import com.skyframework.islandcore.net.alliance.AllyLocationsS2C;
+import com.skyframework.islandcore.net.alliance.LocationSharingSetC2S;
+import com.skyframework.islandcore.net.alliance.LocationSharingStatusRequestC2S;
+import com.skyframework.islandcore.net.alliance.LocationSharingStatusS2C;
+import com.skyframework.islandcore.net.admin.spawn.SpawnExceptionGroupSetPresetC2S;
+import com.skyframework.islandcore.net.admin.spawn.SpawnExceptionGroupsStatusRequestC2S;
+import com.skyframework.islandcore.net.admin.spawn.SpawnExceptionGroupsStatusS2C;
+import com.skyframework.islandcore.net.admin.spawn.SpawnFlagSetC2S;
+import com.skyframework.islandcore.net.admin.spawn.SpawnFlagSetPresetC2S;
+import com.skyframework.islandcore.net.admin.spawn.SpawnFlagsStatusRequestC2S;
+import com.skyframework.islandcore.net.admin.spawn.SpawnFlagsStatusS2C;
+import com.skyframework.islandcore.net.admin.defaults.AdminGlobalFlagSetServerDefaultC2S;
+import com.skyframework.islandcore.net.member.MemberInviteDeclineC2S;
+import com.skyframework.islandcore.util.ServerLang;
 
-import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
-import net.neoforged.neoforge.network.registration.PayloadRegistrar;
-import net.neoforged.neoforge.network.handling.IPayloadHandler;
-import net.neoforged.neoforge.network.PacketDistributor;
-
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceKey;
-import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.network.chat.Component;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
+
+import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
+import net.neoforged.neoforge.network.PacketDistributor;
+import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -134,7 +146,16 @@ public final class ServerPacketHandlers {
 	}
 
 	public static void register(RegisterPayloadHandlersEvent event) {
-		PayloadRegistrar registrar = event.registrar("1");
+		// .optional(): this project deliberately splits into two independently-installed mods
+		// sharing the same "islandcore" channel namespace — the server-side "islandcore" mod and
+		// the client-side "islandcoreclient" companion mod (different modids). Without this,
+		// NeoForge's own per-modid channel presence check refuses the connection outright ("channel
+		// required on the server, missing on the client") the instant a client without a mod
+		// literally called "islandcore" connects — even though islandcoreclient IS that channel's
+		// real client-side counterpart. Real protocol-compatibility checking is already handled by
+		// our own handshake (ClientHandshakeC2S/ServerHandshakeS2C, see NetworkChannels.PROTOCOL_VERSION),
+		// so relaxing NeoForge's own presence check here doesn't weaken anything.
+		PayloadRegistrar registrar = event.registrar("1").optional();
 
 		registerPayloadTypes(registrar);
 
@@ -172,6 +193,7 @@ public final class ServerPacketHandlers {
 		registerBiomeTierHandlers(registrar);
 		registerFlagExceptionHandlers(registrar);
 		registerPartyHandlers(registrar);
+		registerLocationSharingHandlers(registrar);
 
 		registerAdminIslandHandlers(registrar);
 		registerSpawnAdminHandlers(registrar);
@@ -240,11 +262,16 @@ public final class ServerPacketHandlers {
 
 		registrar.playToClient(PartyStatusS2C.TYPE, PartyStatusS2C.CODEC, (payload, context) -> { });
 
+		registrar.playToClient(LocationSharingStatusS2C.TYPE, LocationSharingStatusS2C.CODEC, (payload, context) -> { });
+		registrar.playToClient(AllyLocationsS2C.TYPE, AllyLocationsS2C.CODEC, (payload, context) -> { });
+
 		registrar.playToClient(AdminIslandListS2C.TYPE, AdminIslandListS2C.CODEC, (payload, context) -> { });
 		registrar.playToClient(AdminIslandDetailS2C.TYPE, AdminIslandDetailS2C.CODEC, (payload, context) -> { });
 
 		registrar.playToClient(SpawnStatusS2C.TYPE, SpawnStatusS2C.CODEC, (payload, context) -> { });
 		registrar.playToClient(SpawnBuildProtectionStatusS2C.TYPE, SpawnBuildProtectionStatusS2C.CODEC, (payload, context) -> { });
+		registrar.playToClient(SpawnFlagsStatusS2C.TYPE, SpawnFlagsStatusS2C.CODEC, (payload, context) -> { });
+		registrar.playToClient(SpawnExceptionGroupsStatusS2C.TYPE, SpawnExceptionGroupsStatusS2C.CODEC, (payload, context) -> { });
 
 		registrar.playToClient(DimensionListS2C.TYPE, DimensionListS2C.CODEC, (payload, context) -> { });
 		registrar.playToClient(DimensionDetailS2C.TYPE, DimensionDetailS2C.CODEC, (payload, context) -> { });
@@ -318,6 +345,12 @@ public final class ServerPacketHandlers {
 			PacketDistributor.sendToPlayer(player, ActionResultS2C.fromOutcome(outcome));
 		});
 
+		registerGuarded(registrar, MemberInviteDeclineC2S.TYPE, MemberInviteDeclineC2S.CODEC, (payload, context) -> {
+			ServerPlayer player = context.player();
+			ActionOutcome<?> outcome = MembershipService.declineInvite(player, context.server());
+			PacketDistributor.sendToPlayer(player, ActionResultS2C.fromOutcome(outcome));
+		});
+
 		// Toggles the target between MEMBER and CO_OWNER depending on their current role — see
 		// MembershipService#toggleCoOwner. The MembersScreen "Trust" button reflects this by showing
 		// the current state and calling this same packet either direction.
@@ -358,7 +391,7 @@ public final class ServerPacketHandlers {
 	private static void registerTeleportHandlers(PayloadRegistrar registrar) {
 		registerGuarded(registrar, TeleportRequestC2S.TYPE, TeleportRequestC2S.CODEC, (payload, context) -> {
 			ServerPlayer player = context.player();
-			ActionOutcome<?> outcome = dispatchTeleportRequest(player, payload.action(), context.server());
+			ActionOutcome<?> outcome = dispatchTeleportRequest(player, payload, context.server());
 			PacketDistributor.sendToPlayer(player, ActionResultS2C.fromOutcome(outcome));
 		});
 
@@ -368,20 +401,40 @@ public final class ServerPacketHandlers {
 		});
 	}
 
-	// SPAWN/FARMING replicate the enabled-check SpawnCommand/FarmingCommand already do before
+	// SPAWN/DIMENSION replicate the enabled-check SpawnCommand/FarmingCommand already do before
 	// calling TeleportManager — that check lives in the text command today, not in
 	// TeleportManagerImpl, so it must be repeated here for the network path to behave the same way.
-	private static ActionOutcome<?> dispatchTeleportRequest(ServerPlayer player, TeleportRequestC2S.Type type, MinecraftServer server) {
-		return switch (type) {
+	// DIMENSION only re-does it for FARMING_DISABLED, and only when the requested id happens to be
+	// FarmingConfig's own target — every other dimension has no such config-level toggle.
+	private static ActionOutcome<?> dispatchTeleportRequest(ServerPlayer player, TeleportRequestC2S payload, MinecraftServer server) {
+		return switch (payload.action()) {
 			case HOME -> IslandCoreMod.TELEPORT_MANAGER.requestHome(player);
 			case SPAWN -> IslandCoreMod.SPAWN_CONFIG.isEnabled()
 					? IslandCoreMod.TELEPORT_MANAGER.requestSpawn(player)
 					: ActionOutcome.fail(ActionReason.SPAWN_DISABLED);
-			case FARMING -> IslandCoreMod.FARMING_CONFIG.isEnabled()
-					? IslandCoreMod.TELEPORT_MANAGER.requestFarming(player)
-					: ActionOutcome.fail(ActionReason.FARMING_DISABLED);
 			case RTP -> IslandCoreMod.TELEPORT_MANAGER.requestRtp(player);
+			case DIMENSION -> dispatchDimensionTeleport(player, payload.dimensionId());
+			case OVERWORLD -> IslandCoreMod.TELEPORT_MANAGER.requestOverworldTeleport(player);
 		};
+	}
+
+	private static ActionOutcome<?> dispatchDimensionTeleport(ServerPlayer player, Optional<String> dimensionIdString) {
+		if (dimensionIdString.isEmpty()) {
+			return ActionOutcome.fail(ActionReason.DIMENSION_UNAVAILABLE);
+		}
+
+		ResourceLocation dimensionId;
+		try {
+			dimensionId = ResourceLocation.parse(dimensionIdString.get());
+		} catch (RuntimeException e) {
+			return ActionOutcome.fail(ActionReason.DIMENSION_UNAVAILABLE);
+		}
+
+		if (dimensionId.equals(IslandCoreMod.FARMING_CONFIG.getTargetDimension()) && !IslandCoreMod.FARMING_CONFIG.isEnabled()) {
+			return ActionOutcome.fail(ActionReason.FARMING_DISABLED);
+		}
+
+		return IslandCoreMod.TELEPORT_MANAGER.requestDimensionTeleport(player, dimensionId);
 	}
 
 	private static void registerBiomeTierHandlers(PayloadRegistrar registrar) {
@@ -502,6 +555,31 @@ public final class ServerPacketHandlers {
 			PacketDistributor.sendToPlayer(player, ActionResultS2C.ok());
 		});
 
+		registerGuarded(registrar, AdminGlobalFlagSetServerDefaultC2S.TYPE, AdminGlobalFlagSetServerDefaultC2S.CODEC, (payload, context) -> {
+			ServerPlayer player = context.player();
+			if (rejectIfNotOperator(player)) {
+				return;
+			}
+
+			Optional<Flag> maybeFlag = FlagRegistry.get(payload.flagId());
+			if (maybeFlag.isEmpty() || maybeFlag.get().getCategory() != FlagCategory.ISLAND_GLOBAL) {
+				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(ActionReason.INVALID_FLAG_VALUE));
+				return;
+			}
+
+			TriState value;
+			try {
+				value = TriState.valueOf(payload.value().toUpperCase(Locale.ROOT));
+			} catch (IllegalArgumentException e) {
+				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(ActionReason.INVALID_FLAG_VALUE));
+				return;
+			}
+
+			// Same entry point "/island admin flags set-default <flag> allow|deny|default" calls.
+			IslandCoreMod.SERVER_FLAG_DEFAULTS.setGlobalDefault(payload.flagId(), value);
+			PacketDistributor.sendToPlayer(player, ActionResultS2C.ok());
+		});
+
 		registerGuarded(registrar, AdminExceptionSetServerDefaultC2S.TYPE, AdminExceptionSetServerDefaultC2S.CODEC, (payload, context) -> {
 			ServerPlayer player = context.player();
 			if (rejectIfNotOperator(player)) {
@@ -602,9 +680,11 @@ public final class ServerPacketHandlers {
 
 			ServerPlayer targetPlayer = context.server().getPlayerList().getPlayer(targetUuid.get());
 			if (targetPlayer != null) {
-				targetPlayer.sendSystemMessage(Component.literal(player.getGameProfile().getName()
-						+ " te ha invitado a su party \"" + party.getName()
-						+ "\". Usa /party accept en los próximos 5 minutos para unirte."));
+				targetPlayer.sendSystemMessage(ServerLang.of(targetPlayer,
+						player.getGameProfile().getName() + " te ha invitado a su party \"" + party.getName()
+								+ "\". Usa /party accept en los próximos 5 minutos para unirte.",
+						player.getGameProfile().getName() + " has invited you to their party \"" + party.getName()
+								+ "\". Use /party accept within the next 5 minutes to join."));
 			}
 
 			PacketDistributor.sendToPlayer(player, ActionResultS2C.ok());
@@ -630,8 +710,9 @@ public final class ServerPacketHandlers {
 
 			ServerPlayer leader = context.server().getPlayerList().getPlayer(party.getLeaderUuid());
 			if (leader != null) {
-				leader.sendSystemMessage(Component.literal(
-						player.getGameProfile().getName() + " ha aceptado tu invitación y se ha unido a la party."));
+				leader.sendSystemMessage(ServerLang.of(leader,
+						player.getGameProfile().getName() + " ha aceptado tu invitación y se ha unido a la party.",
+						player.getGameProfile().getName() + " has accepted your invitation and joined the party."));
 			}
 
 			PacketDistributor.sendToPlayer(player, ActionResultS2C.ok());
@@ -674,7 +755,9 @@ public final class ServerPacketHandlers {
 
 			ServerPlayer targetPlayer = context.server().getPlayerList().getPlayer(payload.targetUuid());
 			if (targetPlayer != null) {
-				targetPlayer.sendSystemMessage(Component.literal("Has sido expulsado de la party \"" + party.getName() + "\"."));
+				targetPlayer.sendSystemMessage(ServerLang.of(targetPlayer,
+					"Has sido expulsado de la party \"" + party.getName() + "\".",
+					"You've been kicked from the party \"" + party.getName() + "\"."));
 			}
 
 			PacketDistributor.sendToPlayer(player, ActionResultS2C.ok());
@@ -739,7 +822,9 @@ public final class ServerPacketHandlers {
 				}
 				ServerPlayer member = server.getPlayerList().getPlayer(memberUuid);
 				if (member != null) {
-					member.sendSystemMessage(Component.literal("La party \"" + party.getName() + "\" ha sido disuelta por su líder."));
+					member.sendSystemMessage(ServerLang.of(member,
+						"La party \"" + party.getName() + "\" ha sido disuelta por su líder.",
+						"The party \"" + party.getName() + "\" has been disbanded by its leader."));
 				}
 			}
 
@@ -748,54 +833,6 @@ public final class ServerPacketHandlers {
 			PacketDistributor.sendToPlayer(player, ActionResultS2C.ok());
 		});
 
-		registerGuarded(registrar, PartyAllyAddC2S.TYPE, PartyAllyAddC2S.CODEC, (payload, context) -> {
-			ServerPlayer player = context.player();
-
-			Optional<PartyData> maybeParty = requirePartyLeader(player.getUUID());
-			if (maybeParty.isEmpty()) {
-				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(notLeaderReason(player.getUUID())));
-				return;
-			}
-			PartyData party = maybeParty.get();
-
-			Optional<PartyData> maybeTarget = IslandCoreMod.PARTY_REGISTRY.getPartyByName(payload.targetPartyName());
-			if (maybeTarget.isEmpty()) {
-				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(ActionReason.PARTY_NOT_FOUND));
-				return;
-			}
-			PartyData target = maybeTarget.get();
-
-			if (target.getPartyId().equals(party.getPartyId())) {
-				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(ActionReason.PARTY_ALLY_SELF));
-				return;
-			}
-
-			// Same entry point "/party ally add" calls.
-			IslandCoreMod.PARTY_REGISTRY.addAlly(party.getPartyId(), target.getPartyId());
-			PacketDistributor.sendToPlayer(player, ActionResultS2C.ok());
-		});
-
-		registerGuarded(registrar, PartyAllyRemoveC2S.TYPE, PartyAllyRemoveC2S.CODEC, (payload, context) -> {
-			ServerPlayer player = context.player();
-
-			Optional<PartyData> maybeParty = requirePartyLeader(player.getUUID());
-			if (maybeParty.isEmpty()) {
-				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(notLeaderReason(player.getUUID())));
-				return;
-			}
-			PartyData party = maybeParty.get();
-
-			Optional<PartyData> maybeTarget = IslandCoreMod.PARTY_REGISTRY.getPartyByName(payload.targetPartyName());
-			if (maybeTarget.isEmpty()) {
-				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(ActionReason.PARTY_NOT_FOUND));
-				return;
-			}
-			PartyData target = maybeTarget.get();
-
-			// Same entry point "/party ally remove" calls.
-			IslandCoreMod.PARTY_REGISTRY.removeAlly(party.getPartyId(), target.getPartyId());
-			PacketDistributor.sendToPlayer(player, ActionResultS2C.ok());
-		});
 	}
 
 	// Shared by every leader-only party handler above: returns the sender's party if they're its
@@ -811,6 +848,31 @@ public final class ServerPacketHandlers {
 
 	private static String notLeaderReason(UUID playerUuid) {
 		return IslandCoreMod.PARTY_REGISTRY.getPartyOf(playerUuid).isEmpty() ? ActionReason.NO_PARTY : ActionReason.NOT_PARTY_LEADER;
+	}
+
+	// Renamed from the old registerAllianceHandlers: the island-to-island alliance request/accept/
+	// remove/status handlers that used to live here are gone (see AllianceService/AllianceRegistry,
+	// both retired — individual-player alliance management now goes through MemberAllyAddC2S/
+	// MemberAllyRemoveC2S instead, registered in the member/ block above). Only the location-sharing
+	// toggles remain, now 4 independent booleans (party vs. allies, send vs. receive) instead of 2.
+	private static void registerLocationSharingHandlers(PayloadRegistrar registrar) {
+		registerGuarded(registrar, LocationSharingStatusRequestC2S.TYPE, LocationSharingStatusRequestC2S.CODEC, (payload, context) -> {
+			ServerPlayer player = context.player();
+			boolean sendToParty = IslandCoreMod.LOCATION_SHARING_CONFIG.isSendPositionToPartyEnabled(player.getUUID());
+			boolean receiveFromParty = IslandCoreMod.LOCATION_SHARING_CONFIG.isReceivePositionsFromPartyEnabled(player.getUUID());
+			boolean sendToAllies = IslandCoreMod.LOCATION_SHARING_CONFIG.isSendPositionToAlliesEnabled(player.getUUID());
+			boolean receiveFromAllies = IslandCoreMod.LOCATION_SHARING_CONFIG.isReceivePositionsFromAlliesEnabled(player.getUUID());
+			PacketDistributor.sendToPlayer(player, new LocationSharingStatusS2C(sendToParty, receiveFromParty, sendToAllies, receiveFromAllies));
+		});
+
+		registerGuarded(registrar, LocationSharingSetC2S.TYPE, LocationSharingSetC2S.CODEC, (payload, context) -> {
+			ServerPlayer player = context.player();
+			IslandCoreMod.LOCATION_SHARING_CONFIG.setSendPositionToParty(player.getUUID(), payload.sendPositionToParty());
+			IslandCoreMod.LOCATION_SHARING_CONFIG.setReceivePositionsFromParty(player.getUUID(), payload.receivePositionsFromParty());
+			IslandCoreMod.LOCATION_SHARING_CONFIG.setSendPositionToAllies(player.getUUID(), payload.sendPositionToAllies());
+			IslandCoreMod.LOCATION_SHARING_CONFIG.setReceivePositionsFromAllies(player.getUUID(), payload.receivePositionsFromAllies());
+			PacketDistributor.sendToPlayer(player, ActionResultS2C.ok());
+		});
 	}
 
 	// Admin network block: island list/detail/delete, Spawn management, Dimension Manager, vanilla
@@ -1004,6 +1066,128 @@ public final class ServerPacketHandlers {
 
 			IslandCoreMod.ISLAND_REGISTRY.updateIslandSetting(
 					maybeIsland.get().getIslandId(), IslandSetting.BUILD_PROTECTION, payload.enabled());
+			PacketDistributor.sendToPlayer(player, ActionResultS2C.ok());
+		});
+
+		// Spawn Permisos/General: same FlagsStatusS2C/ExceptionGroupsStatusS2C a normal island's own
+		// flags/exceptions network path replies with (see this section's NetworkChannels comment) —
+		// only the request/action payloads below are new.
+		registerGuarded(registrar, SpawnFlagsStatusRequestC2S.TYPE, SpawnFlagsStatusRequestC2S.CODEC, (payload, context) -> {
+			ServerPlayer player = context.player();
+			if (rejectIfNotOperator(player)) {
+				return;
+			}
+
+			Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(Island.SERVER_OWNER_UUID);
+			if (maybeIsland.isEmpty()) {
+				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(ActionReason.SPAWN_ISLAND_NOT_FOUND));
+				return;
+			}
+
+			FlagsStatusS2C status = FlagsStatusBuilder.buildFlagsStatus(maybeIsland.get(), player.getUUID());
+			PacketDistributor.sendToPlayer(player, new SpawnFlagsStatusS2C(status.flags()));
+		});
+
+		registerGuarded(registrar, SpawnExceptionGroupsStatusRequestC2S.TYPE, SpawnExceptionGroupsStatusRequestC2S.CODEC, (payload, context) -> {
+			ServerPlayer player = context.player();
+			if (rejectIfNotOperator(player)) {
+				return;
+			}
+
+			Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(Island.SERVER_OWNER_UUID);
+			if (maybeIsland.isEmpty()) {
+				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(ActionReason.SPAWN_ISLAND_NOT_FOUND));
+				return;
+			}
+
+			ExceptionGroupsStatusS2C status = FlagsStatusBuilder.buildExceptionGroupsStatus(maybeIsland.get());
+			PacketDistributor.sendToPlayer(player, new SpawnExceptionGroupsStatusS2C(status.groups()));
+		});
+
+		registerGuarded(registrar, SpawnFlagSetC2S.TYPE, SpawnFlagSetC2S.CODEC, (payload, context) -> {
+			ServerPlayer player = context.player();
+			if (rejectIfNotOperator(player)) {
+				return;
+			}
+
+			Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(Island.SERVER_OWNER_UUID);
+			if (maybeIsland.isEmpty()) {
+				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(ActionReason.SPAWN_ISLAND_NOT_FOUND));
+				return;
+			}
+
+			Optional<Flag> maybeFlag = FlagRegistry.get(payload.flagId());
+			if (maybeFlag.isEmpty()) {
+				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(ActionReason.FLAG_NOT_FOUND));
+				return;
+			}
+
+			TriState value;
+			try {
+				value = TriState.valueOf(payload.value().toUpperCase(Locale.ROOT));
+			} catch (IllegalArgumentException e) {
+				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(ActionReason.INVALID_FLAG_VALUE));
+				return;
+			}
+
+			Flag flag = maybeFlag.get();
+			UUID spawnIslandId = maybeIsland.get().getIslandId();
+			if (flag.getCategory() == FlagCategory.ROLE_BASED) {
+				IslandCoreMod.ISLAND_REGISTRY.updateRoleFlagOverride(spawnIslandId, flag.getId(), value);
+			} else {
+				IslandCoreMod.ISLAND_REGISTRY.updateGlobalFlagOverride(spawnIslandId, flag.getId(), value);
+			}
+			PacketDistributor.sendToPlayer(player, ActionResultS2C.ok());
+		});
+
+		registerGuarded(registrar, SpawnFlagSetPresetC2S.TYPE, SpawnFlagSetPresetC2S.CODEC, (payload, context) -> {
+			ServerPlayer player = context.player();
+			if (rejectIfNotOperator(player)) {
+				return;
+			}
+
+			Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(Island.SERVER_OWNER_UUID);
+			if (maybeIsland.isEmpty()) {
+				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(ActionReason.SPAWN_ISLAND_NOT_FOUND));
+				return;
+			}
+
+			try {
+				IslandCoreMod.ISLAND_REGISTRY.applyFlagPreset(maybeIsland.get().getIslandId(), payload.flagId(), payload.preset());
+			} catch (IllegalArgumentException e) {
+				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(ActionReason.INVALID_FLAG_PRESET));
+				return;
+			}
+			PacketDistributor.sendToPlayer(player, ActionResultS2C.ok());
+		});
+
+		registerGuarded(registrar, SpawnExceptionGroupSetPresetC2S.TYPE, SpawnExceptionGroupSetPresetC2S.CODEC, (payload, context) -> {
+			ServerPlayer player = context.player();
+			if (rejectIfNotOperator(player)) {
+				return;
+			}
+
+			Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(Island.SERVER_OWNER_UUID);
+			if (maybeIsland.isEmpty()) {
+				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(ActionReason.SPAWN_ISLAND_NOT_FOUND));
+				return;
+			}
+
+			if (IslandCoreMod.EXCEPTION_GROUP_REGISTRY.getGroup(payload.groupId()).isEmpty()) {
+				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(ActionReason.EXCEPTION_GROUP_NOT_FOUND));
+				return;
+			}
+
+			// Same entry point "/island admin spawn exceptions preset" (executeAdminSpawnExceptionsPreset)
+			// calls — unlike a normal island's own ExceptionGroupSetPresetC2S, isOwnerConfigurable is
+			// deliberately NOT checked here: that flag restricts a normal island OWNER from touching a
+			// server-managed group, not an operator configuring the Spawn island's own defaults.
+			try {
+				IslandCoreMod.ISLAND_REGISTRY.applyExceptionGroupPreset(maybeIsland.get().getIslandId(), payload.groupId(), payload.preset());
+			} catch (IllegalArgumentException e) {
+				PacketDistributor.sendToPlayer(player, ActionResultS2C.fail(ActionReason.INVALID_EXCEPTION_PRESET));
+				return;
+			}
 			PacketDistributor.sendToPlayer(player, ActionResultS2C.ok());
 		});
 

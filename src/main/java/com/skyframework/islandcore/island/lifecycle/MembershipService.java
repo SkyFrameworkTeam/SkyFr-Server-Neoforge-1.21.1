@@ -9,10 +9,10 @@ import com.skyframework.islandcore.api.network.ActionOutcome;
 import com.skyframework.islandcore.api.network.ActionReason;
 import com.skyframework.islandcore.island.model.IslandMember;
 import com.skyframework.islandcore.island.model.IslandRole;
+import com.skyframework.islandcore.util.ServerLang;
 
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.network.chat.Component;
 
 import java.time.Instant;
 import java.util.EnumSet;
@@ -48,8 +48,9 @@ public final class MembershipService {
 
 		ServerPlayer targetPlayer = server.getPlayerList().getPlayer(targetUuid);
 		if (targetPlayer != null) {
-			targetPlayer.sendSystemMessage(Component.literal(inviter.getGameProfile().getName()
-					+ " te ha invitado a su isla. Usa /island accept en los próximos 5 minutos para unirte."));
+			targetPlayer.sendSystemMessage(ServerLang.of(targetPlayer,
+					inviter.getGameProfile().getName() + " te ha invitado a su isla. Usa /island accept en los próximos 5 minutos para unirte.",
+					inviter.getGameProfile().getName() + " has invited you to their island. Use /island accept within the next 5 minutes to join."));
 		}
 
 		return ActionOutcome.ok(targetPlayer != null);
@@ -93,11 +94,33 @@ public final class MembershipService {
 		Island island = maybeIsland.get();
 		ServerPlayer owner = server.getPlayerList().getPlayer(island.getOwnerUuid());
 		if (owner != null) {
-			owner.sendSystemMessage(Component.literal(
-					player.getGameProfile().getName() + " ha aceptado tu invitación y se ha unido a tu isla."));
+			owner.sendSystemMessage(ServerLang.of(owner,
+					player.getGameProfile().getName() + " ha aceptado tu invitación y se ha unido a tu isla.",
+					player.getGameProfile().getName() + " has accepted your invitation and joined your island."));
 		}
 
 		return ActionOutcome.ok(island);
+	}
+
+	// Unlike acceptInvite, there's no membership change to roll back — just consumes the pending
+	// invite server-side so "Ignorar" on the client is permanent instead of the banner reappearing
+	// on the next snapshot refresh (the invite used to only be hidden locally, with the server-side
+	// entry still alive until its own 5-minute timeout).
+	public static ActionOutcome<Void> declineInvite(ServerPlayer player, MinecraftServer server) {
+		Optional<Island> maybeIsland = IslandCoreMod.INVITE_MANAGER.declineInvite(player.getUUID());
+		if (maybeIsland.isEmpty()) {
+			return ActionOutcome.fail(ActionReason.NO_PENDING_INVITE);
+		}
+
+		Island island = maybeIsland.get();
+		ServerPlayer owner = server.getPlayerList().getPlayer(island.getOwnerUuid());
+		if (owner != null) {
+			owner.sendSystemMessage(ServerLang.of(owner,
+					player.getGameProfile().getName() + " ha rechazado tu invitación.",
+					player.getGameProfile().getName() + " has declined your invitation."));
+		}
+
+		return ActionOutcome.ok();
 	}
 
 	// Promotes to CO_OWNER unconditionally: whether targetUuid was already a plain MEMBER or not a
@@ -161,12 +184,18 @@ public final class MembershipService {
 	}
 
 	// Same shape as trust()/untrust() above, but assigning/removing the ALLY role instead of
-	// CO_OWNER — used by "/island ally add/remove" (see IslandRole for how ALLY differs: same
-	// per-flag defaults as VISITOR unless the owner opens a flag for it explicitly).
+	// CO_OWNER — used by "/island alliance add/remove" and MemberAllyAddC2S/RemoveC2S (see
+	// IslandRole for how ALLY differs: same per-flag defaults as VISITOR unless the owner opens a
+	// flag for it explicitly). Unlike trust/untrust/kick/invite (OWNER-only, via getIslandByOwner),
+	// this one also allows CO_OWNER — see resolveManagedIsland — per the "alianzas" consolidation
+	// sprint's explicit requirement that a co-owner can manage the ally list too.
 	public static ActionOutcome<Void> allyAdd(ServerPlayer executor, UUID targetUuid) {
-		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(executor.getUUID());
+		Optional<Island> maybeIsland = resolveManagedIsland(executor.getUUID());
 		if (maybeIsland.isEmpty()) {
 			return ActionOutcome.fail(ActionReason.NO_ISLAND);
+		}
+		if (targetUuid.equals(executor.getUUID())) {
+			return ActionOutcome.fail(ActionReason.ALLIANCE_SELF);
 		}
 
 		Island island = maybeIsland.get();
@@ -177,7 +206,7 @@ public final class MembershipService {
 	}
 
 	public static ActionOutcome<Void> allyRemove(ServerPlayer executor, UUID targetUuid) {
-		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(executor.getUUID());
+		Optional<Island> maybeIsland = resolveManagedIsland(executor.getUUID());
 		if (maybeIsland.isEmpty()) {
 			return ActionOutcome.fail(ActionReason.NO_ISLAND);
 		}
@@ -186,6 +215,22 @@ public final class MembershipService {
 		IslandCoreMod.ISLAND_REGISTRY.removeMember(island.getIslandId(), targetUuid);
 
 		return ActionOutcome.ok();
+	}
+
+	// OWNER's own island if they have one, otherwise the first island (there can only ever be one)
+	// where they hold CO_OWNER — there's no direct player->island index for non-owners in
+	// IslandRegistryApi, so this falls back to scanning getAllIslands(), acceptable here since
+	// alliance management is a rare, non-hot-path action (unlike, say, per-tick protection checks).
+	// Public: IslandCommand#executeAllianceList also needs it, to list the same island's allies
+	// allyAdd/allyRemove would manage.
+	public static Optional<Island> resolveManagedIsland(UUID playerUuid) {
+		Optional<Island> owned = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(playerUuid);
+		if (owned.isPresent()) {
+			return owned;
+		}
+		return IslandCoreMod.ISLAND_REGISTRY.getAllIslands().stream()
+				.filter(island -> island.getRoleOf(playerUuid) == IslandRole.CO_OWNER)
+				.findFirst();
 	}
 
 	// Admin-scoped variants of trust()/untrust() above, for the Spawn admin block: they operate on
@@ -229,8 +274,9 @@ public final class MembershipService {
 		}
 
 		if (targetPlayer != null) {
-			targetPlayer.sendSystemMessage(Component.literal(
-					"Has sido expulsado de la isla de " + executor.getGameProfile().getName() + "."));
+			targetPlayer.sendSystemMessage(ServerLang.of(targetPlayer,
+					"Has sido expulsado de la isla de " + executor.getGameProfile().getName() + ".",
+					"You've been kicked from " + executor.getGameProfile().getName() + "'s island."));
 		}
 
 		return ActionOutcome.ok();

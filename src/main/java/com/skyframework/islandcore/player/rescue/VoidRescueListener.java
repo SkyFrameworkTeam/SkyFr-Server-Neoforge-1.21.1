@@ -7,25 +7,30 @@ import com.skyframework.islandcore.teleport.SafeLocationFinder;
 import com.skyframework.islandcore.teleport.TeleportBackend;
 import com.skyframework.islandcore.teleport.VanillaTeleportBackend;
 
-import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.damagesource.DamageTypes;
-import net.minecraft.resources.ResourceKey;
-import net.minecraft.core.registries.Registries;
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.level.ServerLevel;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.core.BlockPos;
-import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.Optional;
 
-// An emergency rescue teleport for a player who falls out of the world over islandcore:islands (a
-// flat void dimension — see data/islandcore/dimension/islands.json — so falling off the edge of an
-// unbuilt plot is the normal way to end up here, not a rare edge case). Deliberately no
-// countdown/cooldown like /island home has: this is a safety net, not an action the player chose.
+// An emergency rescue teleport for a player who falls out of the world — originally scoped to just
+// islandcore:islands (a flat void dimension — see data/islandcore/dimension/islands.json — so
+// falling off the edge of an unbuilt plot is the normal way to end up here, not a rare edge case),
+// generalized to any dimension created via the Dimension Manager too (see appliesTo below): a
+// NETHER_LIKE/END_LIKE/VOID_FLAT dimension can just as easily drop a player below its own floor —
+// END_LIKE's own world spawn can land in the void between islands, and NETHER_LIKE's terrain
+// generation has its own known issues (see the investigation this generalization was requested
+// alongside). Deliberately no countdown/cooldown like /island home has: this is a safety net, not
+// an action the player chose.
 //
 // Two independent detection paths, both funneling into the same rescue() below:
 //  - isDamageAllowed, hooked to LivingIncomingDamageEvent (IslandCoreMod's third, independent
@@ -42,12 +47,11 @@ public final class VoidRescueListener {
 	private static final ResourceKey<Level> ISLANDS_DIMENSION =
 			ResourceKey.create(Registries.DIMENSION, ResourceLocation.fromNamespaceAndPath("islandcore", "islands"));
 
-	// Matches IslandRegistryImpl's own MIN_Y (the islandcore:islands dimension's configured build
-	// floor) plus a small margin: a player this far below the floor has unambiguously fallen out,
-	// whether or not they've ever taken (or could take) OUT_OF_WORLD damage for it.
-	private static final int MIN_Y = -64;
+	// A player this far below the WORLD'S OWN floor (World#getBottomY(), not a hardcoded constant —
+	// different dynamic dimensions can have different height ranges depending on style/DimensionType)
+	// has unambiguously fallen out, whether or not they've ever taken (or could take) OUT_OF_WORLD
+	// damage for it.
 	private static final int FALL_RESCUE_MARGIN = 16;
-	private static final int FALL_RESCUE_THRESHOLD_Y = MIN_Y + FALL_RESCUE_MARGIN;
 
 	private static final TeleportBackend BACKEND = new VanillaTeleportBackend();
 
@@ -55,7 +59,7 @@ public final class VoidRescueListener {
 	}
 
 	public static boolean isDamageAllowed(LivingEntity victim, DamageSource source) {
-		if (!victim.level().dimension().equals(ISLANDS_DIMENSION) || !IslandCoreMod.VOID_RESCUE_CONFIG.isEnabled()) {
+		if (!appliesTo(victim.level()) || !IslandCoreMod.VOID_RESCUE_CONFIG.isEnabled()) {
 			return true;
 		}
 
@@ -68,7 +72,7 @@ public final class VoidRescueListener {
 
 	// Independent of any damage event — see class javadoc for why this exists. Iterates online
 	// players instead of hooking a per-entity event: cheap (typical server player counts), and
-	// mirrors the ServerTickEvent.Post + tickAll() pattern already used by
+	// mirrors the ServerTickEvents.END_SERVER_TICK + tickAll() pattern already used by
 	// TeleportManagerImpl/IslandDeletionServiceImpl/VanillaResetService.
 	public static void tickAll(MinecraftServer server) {
 		if (!IslandCoreMod.VOID_RESCUE_CONFIG.isEnabled()) {
@@ -76,14 +80,23 @@ public final class VoidRescueListener {
 		}
 
 		for (ServerPlayer player : server.getPlayerList().getPlayers()) {
-			if (!player.level().dimension().equals(ISLANDS_DIMENSION)) {
+			Level world = player.level();
+			if (!appliesTo(world)) {
 				continue;
 			}
-			if (player.getY() > FALL_RESCUE_THRESHOLD_Y) {
+			if (player.getY() > world.getMinBuildHeight() + FALL_RESCUE_MARGIN) {
 				continue;
 			}
 			rescue(player);
 		}
+	}
+
+	// islandcore:islands (the flagship flat-void dimension) plus any dimension created via the
+	// Dimension Manager (DIMENSION_REGISTRY) — every other dimension (real vanilla Overworld/Nether/
+	// End if the server enables them, etc.) is left to vanilla's own fall handling, unaffected.
+	private static boolean appliesTo(Level world) {
+		ResourceKey<Level> key = world.dimension();
+		return key.equals(ISLANDS_DIMENSION) || IslandCoreMod.DIMENSION_REGISTRY.exists(key.location());
 	}
 
 	// Shared by both detection paths above: resolves the player's own island (or Spawn if they
@@ -122,10 +135,12 @@ public final class VoidRescueListener {
 			destination = safe;
 		}
 
-		// player.teleportTo(...) (via TeleportBackend) only repositions the entity — it never
-		// touches fallDistance or velocity. Without this, the player would take fall damage for the
-		// entire void fall the instant they "land" at the rescue spot (or, for the tick-based path,
-		// simply keep falling past the rescue point if velocity isn't zeroed).
+		// player.teleport(...) (ServerPlayerEntity#teleport -> requestTeleport, confirmed via
+		// decompiled ServerPlayerEntity/ServerPlayNetworkHandler/Entity sources) only repositions
+		// the entity — it never touches fallDistance or velocity. Without this, the player would
+		// take fall damage for the entire void fall the instant they "land" at the rescue spot
+		// (or, for the tick-based path, simply keep falling past the rescue point if velocity isn't
+		// zeroed).
 		if (BACKEND.teleport(player, world, destination)) {
 			player.fallDistance = 0.0f;
 			player.setDeltaMovement(Vec3.ZERO);

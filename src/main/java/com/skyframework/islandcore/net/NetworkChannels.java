@@ -23,7 +23,7 @@ public final class NetworkChannels {
 	// (that would require decoding the payload before knowing whether it's safe to decode it) — a
 	// change to the handshake payloads themselves still requires shipping server and client
 	// together, the same as every codec change in this project always has.
-	public static final int PROTOCOL_VERSION = 3;
+	public static final int PROTOCOL_VERSION = 6;
 
 	public static final ResourceLocation HANDSHAKE_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "handshake_c2s");
 	public static final ResourceLocation HANDSHAKE_S2C = ResourceLocation.fromNamespaceAndPath("islandcore", "handshake_s2c");
@@ -45,6 +45,7 @@ public final class NetworkChannels {
 
 	public static final ResourceLocation MEMBER_INVITE_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "member_invite_c2s");
 	public static final ResourceLocation MEMBER_INVITE_ACCEPT_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "member_invite_accept_c2s");
+	public static final ResourceLocation MEMBER_INVITE_DECLINE_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "member_invite_decline_c2s");
 	public static final ResourceLocation MEMBER_TRUST_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "member_trust_c2s");
 	public static final ResourceLocation MEMBER_REMOVE_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "member_remove_c2s");
 	public static final ResourceLocation MEMBER_ALLY_ADD_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "member_ally_add_c2s");
@@ -84,6 +85,19 @@ public final class NetworkChannels {
 	public static final ResourceLocation SPAWN_AUTHORIZED_PLAYER_ADD_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "spawn_authorized_player_add_c2s");
 	public static final ResourceLocation SPAWN_AUTHORIZED_PLAYER_REMOVE_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "spawn_authorized_player_remove_c2s");
 
+	// Spawn Permisos/General (Sprint "teletransportes dinámicos" Admin Permisos/General work): the
+	// status requests reply with the SAME FlagsStatusS2C/ExceptionGroupsStatusS2C a normal island's
+	// own flags/exceptions network path already uses (both builders take an Island directly) — only
+	// the request/action payloads are new, targeting the Spawn island instead of the sender's own.
+	public static final ResourceLocation SPAWN_FLAGS_STATUS_REQUEST_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "spawn_flags_status_request_c2s");
+	public static final ResourceLocation SPAWN_FLAGS_STATUS_S2C = ResourceLocation.fromNamespaceAndPath("islandcore", "spawn_flags_status_s2c");
+	public static final ResourceLocation SPAWN_EXCEPTION_GROUPS_STATUS_REQUEST_C2S =
+			ResourceLocation.fromNamespaceAndPath("islandcore", "spawn_exception_groups_status_request_c2s");
+	public static final ResourceLocation SPAWN_EXCEPTION_GROUPS_STATUS_S2C = ResourceLocation.fromNamespaceAndPath("islandcore", "spawn_exception_groups_status_s2c");
+	public static final ResourceLocation SPAWN_FLAG_SET_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "spawn_flag_set_c2s");
+	public static final ResourceLocation SPAWN_FLAG_SET_PRESET_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "spawn_flag_set_preset_c2s");
+	public static final ResourceLocation SPAWN_EXCEPTION_GROUP_SET_PRESET_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "spawn_exception_group_set_preset_c2s");
+
 	public static final ResourceLocation DIMENSION_LIST_REQUEST_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "dimension_list_request_c2s");
 	public static final ResourceLocation DIMENSION_LIST_S2C = ResourceLocation.fromNamespaceAndPath("islandcore", "dimension_list_s2c");
 	public static final ResourceLocation DIMENSION_DETAIL_REQUEST_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "dimension_detail_request_c2s");
@@ -120,6 +134,7 @@ public final class NetworkChannels {
 	public static final ResourceLocation ADMIN_DEFAULTS_STATUS_REQUEST_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "admin_defaults_status_request_c2s");
 	public static final ResourceLocation ADMIN_DEFAULTS_STATUS_S2C = ResourceLocation.fromNamespaceAndPath("islandcore", "admin_defaults_status_s2c");
 	public static final ResourceLocation ADMIN_FLAG_SET_SERVER_DEFAULT_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "admin_flag_set_server_default_c2s");
+	public static final ResourceLocation ADMIN_GLOBAL_FLAG_SET_SERVER_DEFAULT_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "admin_global_flag_set_server_default_c2s");
 	public static final ResourceLocation ADMIN_EXCEPTION_SET_SERVER_DEFAULT_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "admin_exception_set_server_default_c2s");
 	public static final ResourceLocation ADMIN_FLAG_SET_REQUIREMENT_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "admin_flag_set_requirement_c2s");
 
@@ -135,8 +150,14 @@ public final class NetworkChannels {
 	public static final ResourceLocation PARTY_RENAME_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "party_rename_c2s");
 	public static final ResourceLocation PARTY_DISBAND_REQUEST_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "party_disband_request_c2s");
 	public static final ResourceLocation PARTY_DISBAND_CONFIRM_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "party_disband_confirm_c2s");
-	public static final ResourceLocation PARTY_ALLY_ADD_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "party_ally_add_c2s");
-	public static final ResourceLocation PARTY_ALLY_REMOVE_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "party_ally_remove_c2s");
+
+	// Per-player ally-location-sharing preferences — see player.PlayerLocationSharingConfig.
+	public static final ResourceLocation LOCATION_SHARING_STATUS_REQUEST_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "location_sharing_status_request_c2s");
+	public static final ResourceLocation LOCATION_SHARING_STATUS_S2C = ResourceLocation.fromNamespaceAndPath("islandcore", "location_sharing_status_s2c");
+	public static final ResourceLocation LOCATION_SHARING_SET_C2S = ResourceLocation.fromNamespaceAndPath("islandcore", "location_sharing_set_c2s");
+
+	// Periodic push (not requested by the client) — see island.lifecycle.AllyLocationBroadcaster.
+	public static final ResourceLocation ALLY_LOCATIONS_S2C = ResourceLocation.fromNamespaceAndPath("islandcore", "ally_locations_s2c");
 
 	private NetworkChannels() {
 	}

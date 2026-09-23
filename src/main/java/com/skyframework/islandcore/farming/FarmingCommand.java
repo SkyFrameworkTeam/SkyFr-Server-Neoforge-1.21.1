@@ -4,14 +4,14 @@ import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 
 import com.skyframework.islandcore.IslandCoreMod;
-
-import net.neoforged.neoforge.common.NeoForge;
-import net.neoforged.neoforge.event.RegisterCommandsEvent;
+import com.skyframework.islandcore.util.ServerLang;
 
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.network.chat.Component;
+
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.RegisterCommandsEvent;
 
 // "/farming", open to every player (no OP required).
 public class FarmingCommand {
@@ -31,7 +31,8 @@ public class FarmingCommand {
 		ServerPlayer player = source.getPlayerOrException();
 
 		if (!IslandCoreMod.FARMING_CONFIG.isEnabled()) {
-			source.sendFailure(Component.literal("El comando /farming está desactivado en este servidor."));
+			source.sendFailure(ServerLang.of(player,
+					"El comando /farming está desactivado en este servidor.", "The /farming command is disabled on this server."));
 			return 0;
 		}
 

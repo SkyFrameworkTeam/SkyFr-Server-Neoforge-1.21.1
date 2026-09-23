@@ -1,27 +1,26 @@
 package com.skyframework.islandcore.dimension.vanilla;
 
+import com.skyframework.islandcore.IslandCoreMod;
+import com.skyframework.islandcore.api.island.Island;
+import com.skyframework.islandcore.teleport.TeleportBackend;
+import com.skyframework.islandcore.util.ServerLang;
+
+import net.minecraft.ChatFormatting;
+import net.minecraft.core.BlockPos;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.Level;
+
+import net.neoforged.fml.loading.FMLPaths;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonParser;
-
-import com.skyframework.islandcore.IslandCoreMod;
-import com.skyframework.islandcore.api.island.Island;
-import com.skyframework.islandcore.teleport.TeleportBackend;
-
-import net.neoforged.fml.loading.FMLPaths;
-import net.neoforged.neoforge.common.NeoForge;
-import net.neoforged.neoforge.event.server.ServerStartedEvent;
-
-import net.minecraft.resources.ResourceKey;
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.level.ServerLevel;
-import net.minecraft.network.chat.Component;
-import net.minecraft.ChatFormatting;
-import net.minecraft.core.BlockPos;
-import net.minecraft.world.level.Level;
 
 import java.io.IOException;
 import java.io.Reader;
@@ -313,9 +312,12 @@ public class VanillaResetService {
 		}
 
 		player.displayClientMessage(
-				Component.literal(dimensionKey + " se reseteará en el próximo reinicio del servidor en " + secondsRemaining
-						+ "s - /dimension vanilla regenerate " + dimensionKey + " confirm para confirmar")
-						.withStyle(ChatFormatting.RED),
+				ServerLang.of(player,
+								dimensionKey + " se reseteará en el próximo reinicio del servidor en " + secondsRemaining
+										+ "s - /dimension vanilla regenerate " + dimensionKey + " confirm para confirmar",
+								dimensionKey + " will reset on the server's next restart in " + secondsRemaining
+										+ "s - /dimension vanilla regenerate " + dimensionKey + " confirm to confirm")
+						.copy().withStyle(ChatFormatting.RED),
 				true);
 	}
 
@@ -325,7 +327,8 @@ public class VanillaResetService {
 			return;
 		}
 
-		player.sendSystemMessage(Component.literal("La solicitud de reseteo de " + dimensionKey + " ha caducado."));
+		player.sendSystemMessage(ServerLang.of(player,
+				"La solicitud de reseteo de " + dimensionKey + " ha caducado.", "The reset request for " + dimensionKey + " has expired."));
 	}
 
 	// lastNotifiedSecond tracks the countdown value last shown on the action bar, so

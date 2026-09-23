@@ -1,7 +1,6 @@
 package com.skyframework.islandcore.command;
 
 import com.mojang.authlib.GameProfile;
-
 import com.mojang.brigadier.arguments.BoolArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
@@ -29,25 +28,29 @@ import com.skyframework.islandcore.protection.flag.FlagRegistry;
 import com.skyframework.islandcore.protection.flag.FlagResolver;
 import com.skyframework.islandcore.protection.flag.TriState;
 import com.skyframework.islandcore.teleport.SafeLandingChecker;
+import com.skyframework.islandcore.island.model.IslandMember;
+import com.skyframework.islandcore.protection.AdminOverrideState;
+import com.skyframework.islandcore.util.ServerLang;
 
-import net.neoforged.neoforge.common.NeoForge;
-import net.neoforged.neoforge.event.RegisterCommandsEvent;
-
+import net.minecraft.ChatFormatting;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.commands.arguments.GameProfileArgument;
 import net.minecraft.commands.arguments.ResourceLocationArgument;
-import net.minecraft.resources.ResourceKey;
-import net.minecraft.core.registries.Registries;
-import net.minecraft.commands.Commands;
-import net.minecraft.commands.CommandSourceStack;
-import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.network.chat.MutableComponent;
-import net.minecraft.network.chat.Component;
-import net.minecraft.ChatFormatting;
-import net.minecraft.resources.ResourceLocation;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
+
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.RegisterCommandsEvent;
 
 import java.time.Duration;
 import java.util.Collection;
@@ -116,13 +119,21 @@ public class IslandCommand {
 						.then(Commands.literal("untrust")
 								.then(Commands.argument("player", EntityArgument.player())
 										.executes(IslandCommand::executeUntrust)))
-						.then(Commands.literal("ally")
+						// Individual-player alliance list, managed by OWNER or CO_OWNER (see
+						// MembershipService#allyAdd/allyRemove's own resolveManagedIsland). Replaces the
+						// old "/island ally add/remove" naming (same underlying mechanism — IslandRole.ALLY
+						// via an explicit IslandMember) for consistency with the "alianzas" consolidation
+						// sprint's terminology; also reachable from the client's Party menu via
+						// MemberAllyAddC2S/MemberAllyRemoveC2S, unchanged.
+						.then(Commands.literal("alliance")
 								.then(Commands.literal("add")
-										.then(Commands.argument("player", EntityArgument.player())
-												.executes(IslandCommand::executeAllyAdd)))
+										.then(Commands.argument("player", GameProfileArgument.gameProfile())
+												.executes(IslandCommand::executeAllianceAdd)))
 								.then(Commands.literal("remove")
-										.then(Commands.argument("player", EntityArgument.player())
-												.executes(IslandCommand::executeAllyRemove))))
+										.then(Commands.argument("player", GameProfileArgument.gameProfile())
+												.executes(IslandCommand::executeAllianceRemove)))
+								.then(Commands.literal("list")
+										.executes(IslandCommand::executeAllianceList)))
 						.then(Commands.literal("kick")
 								.then(Commands.argument("player", GameProfileArgument.gameProfile())
 										.executes(IslandCommand::executeKick)))
@@ -208,7 +219,12 @@ public class IslandCommand {
 										.then(Commands.argument("player", EntityArgument.player())
 												.executes(IslandCommand::executeAdminDelete)
 												.then(Commands.literal("confirm")
-														.executes(IslandCommand::executeAdminDeleteConfirm)))))
+														.executes(IslandCommand::executeAdminDeleteConfirm))))
+								.then(Commands.literal("override")
+										.then(Commands.literal("on")
+												.executes(ctx -> executeAdminOverride(ctx, true)))
+										.then(Commands.literal("off")
+												.executes(ctx -> executeAdminOverride(ctx, false)))))
 				)
 		);
 	}
@@ -220,15 +236,16 @@ public class IslandCommand {
 		ActionOutcome<Island> outcome = IslandActionService.create(player, source.getServer());
 		if (!outcome.success()) {
 			if (ActionReason.NO_PERMISSION.equals(outcome.reason())) {
-				source.sendFailure(Component.literal("No tienes permitido crear una isla en este servidor."));
+				source.sendFailure(ServerLang.of(player, "No tienes permitido crear una isla en este servidor.", "You are not allowed to create an island on this server."));
 			} else {
-				source.sendFailure(Component.literal("Ya tienes una isla. Usa /island info para ver sus datos."));
+				source.sendFailure(ServerLang.of(player, "Ya tienes una isla. Usa /island info para ver sus datos.", "You already have an island. Use /island info to see its details."));
 			}
 			return 0;
 		}
 
 		BlockPos center = outcome.data().getCenter();
-		source.sendSuccess(() -> Component.literal("¡Isla creada! Centro: ("
+		source.sendSuccess(() -> ServerLang.of(player, "¡Isla creada! Centro: ("
+				+ center.getX() + ", " + center.getY() + ", " + center.getZ() + ")", "Island created! Center: ("
 				+ center.getX() + ", " + center.getY() + ", " + center.getZ() + ")"), false);
 
 		return 1;
@@ -240,7 +257,7 @@ public class IslandCommand {
 
 		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(player.getUUID());
 		if (maybeIsland.isEmpty()) {
-			source.sendFailure(Component.literal("You don't own an island."));
+			source.sendFailure(ServerLang.of(player, "You don't own an island.", "You don't own an island."));
 			return 0;
 		}
 
@@ -254,7 +271,7 @@ public class IslandCommand {
 
 		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(player.getUUID());
 		if (maybeIsland.isEmpty()) {
-			source.sendFailure(Component.literal("No tienes ninguna isla todavía. Usa /island create para crear una."));
+			source.sendFailure(ServerLang.of(player, "No tienes ninguna isla todavía. Usa /island create para crear una.", "You don't have an island yet. Use /island create to create one."));
 			return 0;
 		}
 
@@ -269,12 +286,13 @@ public class IslandCommand {
 		ActionOutcome<IslandActionService.UpgradeResult> outcome = IslandActionService.upgrade(player.getUUID());
 		if (!outcome.success()) {
 			if (ActionReason.NO_ISLAND.equals(outcome.reason())) {
-				source.sendFailure(Component.literal("No tienes ninguna isla todavía."));
+				source.sendFailure(ServerLang.of(player, "No tienes ninguna isla todavía.", "You don't have an island yet."));
 			} else {
 				// maxSize exceeds the island's reserved plot: a permissions/plot misconfiguration,
 				// not something the player can fix themselves.
-				source.sendFailure(Component.literal(
-						"El tamaño permitido por tus permisos excede la parcela reservada de tu isla. Contacta con un administrador del servidor."));
+				source.sendFailure(ServerLang.of(player,
+						"El tamaño permitido por tus permisos excede la parcela reservada de tu isla. Contacta con un administrador del servidor.",
+						"The size allowed by your permissions exceeds your island's reserved plot. Contact a server administrator."));
 			}
 			return 0;
 		}
@@ -282,13 +300,14 @@ public class IslandCommand {
 		IslandActionService.UpgradeResult result = outcome.data();
 		if (result.oldSize() == result.newSize()) {
 			int currentSize = result.oldSize();
-			source.sendSuccess(() -> Component.literal(
-					"Ya tienes el tamaño máximo permitido por tus permisos actuales (tamaño actual: " + currentSize + ")."), false);
+			source.sendSuccess(() -> ServerLang.of(player,
+					"Ya tienes el tamaño máximo permitido por tus permisos actuales (tamaño actual: " + currentSize + ").",
+					"You already have the maximum size allowed by your current permissions (current size: " + currentSize + ")."), false);
 			return 1;
 		}
 
 		int newSize = result.newSize();
-		source.sendSuccess(() -> Component.literal("¡Isla ampliada! Nuevo tamaño: " + newSize + "."), false);
+		source.sendSuccess(() -> ServerLang.of(player, "¡Isla ampliada! Nuevo tamaño: " + newSize + ".", "Island upgraded! New size: " + newSize + "."), false);
 
 		return 1;
 	}
@@ -310,7 +329,7 @@ public class IslandCommand {
 
 		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(player.getUUID());
 		if (maybeIsland.isEmpty()) {
-			source.sendFailure(Component.literal("No tienes ninguna isla todavía."));
+			source.sendFailure(ServerLang.of(player, "No tienes ninguna isla todavía.", "You don't have an island yet."));
 			return 0;
 		}
 
@@ -319,19 +338,20 @@ public class IslandCommand {
 		boolean withinBuiltIsland = island.getBounds().contains(player.blockPosition());
 
 		if (!inIslandsDimension || !withinBuiltIsland) {
-			source.sendFailure(Component.literal("El home debe fijarse dentro de la parte ya construida de tu isla."));
+			source.sendFailure(ServerLang.of(player, "El home debe fijarse dentro de la parte ya construida de tu isla.", "The home must be set inside the already-built part of your island."));
 			return 0;
 		}
 
 		if (!SafeLandingChecker.isSafe(player.serverLevel(), player.blockPosition())) {
-			source.sendFailure(Component.literal(
-					"No puedes fijar el home aquí, no hay suelo seguro debajo. Colócate sobre un bloque sólido."));
+			source.sendFailure(ServerLang.of(player,
+					"No puedes fijar el home aquí, no hay suelo seguro debajo. Colócate sobre un bloque sólido.",
+					"You can't set the home here, there is no safe ground below. Stand on a solid block."));
 			return 0;
 		}
 
 		IslandCoreMod.ISLAND_REGISTRY.updateHomeLocation(island.getIslandId(), player.blockPosition());
 
-		source.sendSuccess(() -> Component.literal("Home actualizado a tu posición actual."), false);
+		source.sendSuccess(() -> ServerLang.of(player, "Home actualizado a tu posición actual.", "Home updated to your current position."), false);
 
 		return 1;
 	}
@@ -349,16 +369,16 @@ public class IslandCommand {
 		ActionOutcome<Void> outcome = IslandActionService.updateLegacySetting(player.getUUID(), settingName, value);
 		if (!outcome.success()) {
 			if (ActionReason.NO_ISLAND.equals(outcome.reason())) {
-				source.sendFailure(Component.literal("No tienes ninguna isla todavía."));
+				source.sendFailure(ServerLang.of(player, "No tienes ninguna isla todavía.", "You don't have an island yet."));
 			} else if (ActionReason.UNKNOWN_SETTING.equals(outcome.reason())) {
-				source.sendFailure(Component.literal("Ajuste desconocido. Ajustes disponibles: firespread, pvp, mobdamage."));
+				source.sendFailure(ServerLang.of(player, "Ajuste desconocido. Ajustes disponibles: firespread, pvp, mobdamage.", "Unknown setting. Available settings: firespread, pvp, mobdamage."));
 			} else {
-				source.sendFailure(Component.literal("Solo el propietario de la isla puede cambiar sus ajustes."));
+				source.sendFailure(ServerLang.of(player, "Solo el propietario de la isla puede cambiar sus ajustes.", "Only the island owner can change its settings."));
 			}
 			return 0;
 		}
 
-		source.sendSuccess(() -> Component.literal(settingName.toLowerCase() + " = " + value), false);
+		source.sendSuccess(() -> ServerLang.of(player, settingName.toLowerCase() + " = " + value, settingName.toLowerCase() + " = " + value), false);
 
 		return 1;
 	}
@@ -369,12 +389,12 @@ public class IslandCommand {
 
 		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(player.getUUID());
 		if (maybeIsland.isEmpty()) {
-			source.sendFailure(Component.literal("No tienes ninguna isla todavía."));
+			source.sendFailure(ServerLang.of(player, "No tienes ninguna isla todavía.", "You don't have an island yet."));
 			return 0;
 		}
 
 		Island island = maybeIsland.get();
-		source.sendSuccess(() -> Component.literal("=== Flags de tu isla ===").withStyle(ChatFormatting.BOLD, ChatFormatting.AQUA), false);
+		source.sendSuccess(() -> ServerLang.of(player, "=== Flags de tu isla ===", "=== Your island's flags ===").copy().withStyle(ChatFormatting.BOLD, ChatFormatting.AQUA), false);
 
 		IslandMessages.sectionTitle(source, "Permisos por Rol", ChatFormatting.GOLD);
 		IslandRole[] roles = IslandRole.values();
@@ -384,19 +404,19 @@ public class IslandCommand {
 			}
 
 			String header = flagDisplayName(flag) + ":";
-			source.sendSuccess(() -> Component.literal(header).withStyle(ChatFormatting.WHITE), false);
+			source.sendSuccess(() -> ServerLang.of(player, header, header).copy().withStyle(ChatFormatting.WHITE), false);
 
 			// 3 roles per line (OWNER/MEMBER/CO_OWNER, then ALLY/VISITOR/DENIED) rather than one
 			// long line: easier to scan, and each ALLOW/DENY value is colored green/red.
 			for (int i = 0; i < roles.length; i += 3) {
 				int lineEnd = Math.min(i + 3, roles.length);
-				MutableComponent line = Component.literal("  ");
+				MutableComponent line = ServerLang.of(player, "  ", "  ").copy();
 				for (int j = i; j < lineEnd; j++) {
 					IslandRole role = roles[j];
 					TriState value = FlagResolver.resolveForRole(island, role, flag);
 					line.append(roleValueText(role, value));
 					if (j < lineEnd - 1) {
-						line.append(Component.literal("   "));
+						line.append(ServerLang.of(player, "   ", "   "));
 					}
 				}
 				source.sendSuccess(() -> line, false);
@@ -448,7 +468,7 @@ public class IslandCommand {
 
 		Optional<Flag> maybeFlag = FlagRegistry.get(flagId);
 		if (maybeFlag.isEmpty()) {
-			source.sendFailure(Component.literal("Flag desconocido: " + flagId));
+			source.sendFailure(ServerLang.of(player, "Flag desconocido: " + flagId, "Unknown flag: " + flagId));
 			return 0;
 		}
 
@@ -456,23 +476,23 @@ public class IslandCommand {
 		try {
 			value = TriState.valueOf(valueArg.toUpperCase(Locale.ROOT));
 		} catch (IllegalArgumentException e) {
-			source.sendFailure(Component.literal("Valor inválido: " + valueArg + ". Usa allow, deny o default."));
+			source.sendFailure(ServerLang.of(player, "Valor inválido: " + valueArg + ". Usa allow, deny o default.", "Invalid value: " + valueArg + ". Use allow, deny or default."));
 			return 0;
 		}
 
 		ActionOutcome<Void> outcome = IslandActionService.updateFlag(player.getUUID(), maybeFlag.get(), value);
 		if (!outcome.success()) {
 			if (ActionReason.NO_ISLAND.equals(outcome.reason())) {
-				source.sendFailure(Component.literal("No tienes ninguna isla todavía."));
+				source.sendFailure(ServerLang.of(player, "No tienes ninguna isla todavía.", "You don't have an island yet."));
 			} else if (ActionReason.MISSING_FLAG_PERMISSION.equals(outcome.reason())) {
-				source.sendFailure(Component.literal(missingFlagPermissionMessage(flagId)));
+				source.sendFailure(ServerLang.of(player, missingFlagPermissionMessage(flagId), missingFlagPermissionMessage(flagId)));
 			} else {
-				source.sendFailure(Component.literal("Solo el propietario de la isla puede cambiar sus flags."));
+				source.sendFailure(ServerLang.of(player, "Solo el propietario de la isla puede cambiar sus flags.", "Only the island owner can change its flags."));
 			}
 			return 0;
 		}
 
-		source.sendSuccess(() -> Component.literal(flagId + " = " + valueArg.toLowerCase(Locale.ROOT)), false);
+		source.sendSuccess(() -> ServerLang.of(player, flagId + " = " + valueArg.toLowerCase(Locale.ROOT), flagId + " = " + valueArg.toLowerCase(Locale.ROOT)), false);
 
 		return 1;
 	}
@@ -486,20 +506,22 @@ public class IslandCommand {
 		ActionOutcome<Void> outcome = IslandActionService.applyFlagPreset(player.getUUID(), flagId, preset);
 		if (!outcome.success()) {
 			if (ActionReason.NO_ISLAND.equals(outcome.reason())) {
-				source.sendFailure(Component.literal("No tienes ninguna isla todavía."));
+				source.sendFailure(ServerLang.of(player, "No tienes ninguna isla todavía.", "You don't have an island yet."));
 			} else if (ActionReason.INVALID_FLAG_PRESET.equals(outcome.reason())) {
-				source.sendFailure(Component.literal(
+				source.sendFailure(ServerLang.of(player,
 						"Flag o preset inválido. Usa un flag por rol (no fire_spread/pvp_damage/mob_damage) y uno de: "
+								+ String.join(", ", FLAG_PRESET_NAMES) + ".",
+						"Invalid flag or preset. Use a role-based flag (not fire_spread/pvp_damage/mob_damage) and one of: "
 								+ String.join(", ", FLAG_PRESET_NAMES) + "."));
 			} else if (ActionReason.MISSING_FLAG_PERMISSION.equals(outcome.reason())) {
-				source.sendFailure(Component.literal(missingFlagPermissionMessage(flagId)));
+				source.sendFailure(ServerLang.of(player, missingFlagPermissionMessage(flagId), missingFlagPermissionMessage(flagId)));
 			} else {
-				source.sendFailure(Component.literal("Solo el propietario de la isla puede cambiar sus flags."));
+				source.sendFailure(ServerLang.of(player, "Solo el propietario de la isla puede cambiar sus flags.", "Only the island owner can change its flags."));
 			}
 			return 0;
 		}
 
-		source.sendSuccess(() -> Component.literal(flagId + " = preset " + preset), false);
+		source.sendSuccess(() -> ServerLang.of(player, flagId + " = preset " + preset, flagId + " = preset " + preset), false);
 
 		return 1;
 	}
@@ -586,18 +608,18 @@ public class IslandCommand {
 
 		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(player.getUUID());
 		if (maybeIsland.isEmpty()) {
-			source.sendFailure(Component.literal("No tienes ninguna isla todavía."));
+			source.sendFailure(ServerLang.of(player, "No tienes ninguna isla todavía.", "You don't have an island yet."));
 			return 0;
 		}
 
 		Island island = maybeIsland.get();
 		List<ExceptionGroup> groups = IslandCoreMod.EXCEPTION_GROUP_REGISTRY.getAllGroups();
 		if (groups.isEmpty()) {
-			source.sendSuccess(() -> Component.literal("No hay ningún grupo de excepción configurado."), false);
+			source.sendSuccess(() -> ServerLang.of(player, "No hay ningún grupo de excepción configurado.", "No exception group is configured."), false);
 			return 0;
 		}
 
-		source.sendSuccess(() -> Component.literal("=== Grupos de Excepción de tu Isla ===").withStyle(ChatFormatting.BOLD, ChatFormatting.AQUA), false);
+		source.sendSuccess(() -> ServerLang.of(player, "=== Grupos de Excepción de tu Isla ===", "=== Your Island's Exception Groups ===").copy().withStyle(ChatFormatting.BOLD, ChatFormatting.AQUA), false);
 
 		sendExceptionGroupSection(source, island, groups, ExceptionGroupCategory.BLOCK, "Bloques");
 		sendExceptionGroupSection(source, island, groups, ExceptionGroupCategory.ENTITY, "Entidades");
@@ -658,28 +680,28 @@ public class IslandCommand {
 
 		Optional<ExceptionGroup> maybeGroup = IslandCoreMod.EXCEPTION_GROUP_REGISTRY.getGroup(groupId);
 		if (maybeGroup.isEmpty()) {
-			source.sendFailure(Component.literal("Grupo de excepción desconocido: " + groupId));
+			source.sendFailure(ServerLang.of(player, "Grupo de excepción desconocido: " + groupId, "Unknown exception group: " + groupId));
 			return 0;
 		}
 
 		if (!maybeGroup.get().isOwnerConfigurable()) {
-			source.sendFailure(Component.literal("El grupo " + groupId + " solo puede gestionarlo un administrador."));
+			source.sendFailure(ServerLang.of(player, "El grupo " + groupId + " solo puede gestionarlo un administrador.", "The group " + groupId + " can only be managed by an administrator."));
 			return 0;
 		}
 
 		ActionOutcome<Void> outcome = IslandActionService.applyExceptionGroupPreset(player.getUUID(), groupId, preset);
 		if (!outcome.success()) {
 			if (ActionReason.NO_ISLAND.equals(outcome.reason())) {
-				source.sendFailure(Component.literal("No tienes ninguna isla todavía."));
+				source.sendFailure(ServerLang.of(player, "No tienes ninguna isla todavía.", "You don't have an island yet."));
 			} else if (ActionReason.INVALID_EXCEPTION_PRESET.equals(outcome.reason())) {
-				source.sendFailure(Component.literal("Preset inválido. Usa uno de: " + String.join(", ", FLAG_PRESET_NAMES) + "."));
+				source.sendFailure(ServerLang.of(player, "Preset inválido. Usa uno de: " + String.join(", ", FLAG_PRESET_NAMES) + ".", "Invalid preset. Use one of: " + String.join(", ", FLAG_PRESET_NAMES) + "."));
 			} else {
-				source.sendFailure(Component.literal("Solo el propietario de la isla puede cambiar sus grupos de excepción."));
+				source.sendFailure(ServerLang.of(player, "Solo el propietario de la isla puede cambiar sus grupos de excepción.", "Only the island owner can change its exception groups."));
 			}
 			return 0;
 		}
 
-		source.sendSuccess(() -> Component.literal(groupId + " = preset " + preset), false);
+		source.sendSuccess(() -> ServerLang.of(player, groupId + " = preset " + preset, groupId + " = preset " + preset), false);
 
 		return 1;
 	}
@@ -775,16 +797,18 @@ public class IslandCommand {
 		ActionOutcome<Void> outcome = IslandActionService.requestDelete(player.getUUID());
 		if (!outcome.success()) {
 			if (ActionReason.NO_ISLAND.equals(outcome.reason())) {
-				source.sendFailure(Component.literal("No tienes ninguna isla todavía."));
+				source.sendFailure(ServerLang.of(player, "No tienes ninguna isla todavía.", "You don't have an island yet."));
 			} else {
-				source.sendFailure(Component.literal("Esta isla ya está en proceso de eliminación."));
+				source.sendFailure(ServerLang.of(player, "Esta isla ya está en proceso de eliminación.", "This island is already being deleted."));
 			}
 			return 0;
 		}
 
-		source.sendSuccess(() -> Component.literal(
+		source.sendSuccess(() -> ServerLang.of(player,
 				"¿Seguro que quieres borrar tu isla? Esta acción no se puede deshacer. "
-						+ "Usa /island delete confirm en los próximos 30 segundos para confirmar."), false);
+						+ "Usa /island delete confirm en los próximos 30 segundos para confirmar.",
+				"Are you sure you want to delete your island? This action cannot be undone. "
+						+ "Use /island delete confirm within the next 30 seconds to confirm."), false);
 
 		return 1;
 	}
@@ -796,15 +820,16 @@ public class IslandCommand {
 		ActionOutcome<Void> outcome = IslandActionService.confirmDelete(player.getUUID());
 		if (!outcome.success()) {
 			if (ActionReason.NO_ISLAND.equals(outcome.reason())) {
-				source.sendFailure(Component.literal("No tienes ninguna isla todavía."));
+				source.sendFailure(ServerLang.of(player, "No tienes ninguna isla todavía.", "You don't have an island yet."));
 			} else {
-				source.sendFailure(Component.literal(
-						"No hay ninguna solicitud de borrado pendiente (o ha expirado). Usa /island delete primero."));
+				source.sendFailure(ServerLang.of(player,
+						"No hay ninguna solicitud de borrado pendiente (o ha expirado). Usa /island delete primero.",
+						"There is no pending deletion request (or it has expired). Use /island delete first."));
 			}
 			return 0;
 		}
 
-		source.sendSuccess(() -> Component.literal("Tu isla se está borrando..."), false);
+		source.sendSuccess(() -> ServerLang.of(player, "Tu isla se está borrando...", "Your island is being deleted..."), false);
 
 		return 1;
 	}
@@ -833,7 +858,7 @@ public class IslandCommand {
 				: "Cooldown de /island home: " + IslandCoreMod.PERMISSION_PROVIDER.getHomeCooldownSeconds(playerUuid) + " segundos.";
 
 		String message = sizeLine + "\n" + cooldownLine;
-		source.sendSuccess(() -> Component.literal(message), false);
+		source.sendSuccess(() -> ServerLang.of(player, message, message), false);
 
 		return 1;
 	}
@@ -846,22 +871,24 @@ public class IslandCommand {
 		ActionOutcome<Boolean> outcome = MembershipService.invite(player, targetProfile.getId(), source.getServer());
 		if (!outcome.success()) {
 			if (ActionReason.NO_ISLAND.equals(outcome.reason())) {
-				source.sendFailure(Component.literal("No tienes ninguna isla todavía."));
+				source.sendFailure(ServerLang.of(player, "No tienes ninguna isla todavía.", "You don't have an island yet."));
 			} else if (ActionReason.ALREADY_OWNER.equals(outcome.reason())) {
-				source.sendFailure(Component.literal("Ya eres el propietario de esta isla."));
+				source.sendFailure(ServerLang.of(player, "Ya eres el propietario de esta isla.", "You are already the owner of this island."));
 			} else {
-				source.sendFailure(Component.literal("Ese jugador ya es miembro de tu isla."));
+				source.sendFailure(ServerLang.of(player, "Ese jugador ya es miembro de tu isla.", "That player is already a member of your island."));
 			}
 			return 0;
 		}
 
 		boolean targetOnline = outcome.data();
 		if (targetOnline) {
-			source.sendSuccess(() -> Component.literal("Invitación enviada a " + targetProfile.getName() + "."), false);
+			source.sendSuccess(() -> ServerLang.of(player, "Invitación enviada a " + targetProfile.getName() + ".", "Invitation sent to " + targetProfile.getName() + "."), false);
 		} else {
-			source.sendSuccess(() -> Component.literal(
+			source.sendSuccess(() -> ServerLang.of(player,
 					"Invitación registrada para " + targetProfile.getName()
-							+ " (no está conectado ahora mismo, pero podrá aceptarla si entra en los próximos 5 minutos)."), false);
+							+ " (no está conectado ahora mismo, pero podrá aceptarla si entra en los próximos 5 minutos).",
+					"Invitation registered for " + targetProfile.getName()
+							+ " (not online right now, but they will be able to accept it if they join within the next 5 minutes)."), false);
 		}
 
 		return 1;
@@ -873,11 +900,11 @@ public class IslandCommand {
 
 		ActionOutcome<Island> outcome = MembershipService.acceptInvite(player, source.getServer());
 		if (!outcome.success()) {
-			source.sendFailure(Component.literal("No tienes ninguna invitación pendiente (o ha caducado)."));
+			source.sendFailure(ServerLang.of(player, "No tienes ninguna invitación pendiente (o ha caducado).", "You don't have any pending invitation (or it has expired)."));
 			return 0;
 		}
 
-		source.sendSuccess(() -> Component.literal("¡Te has unido a la isla!"), false);
+		source.sendSuccess(() -> ServerLang.of(player, "¡Te has unido a la isla!", "You have joined the island!"), false);
 
 		return 1;
 	}
@@ -889,12 +916,12 @@ public class IslandCommand {
 
 		ActionOutcome<Void> outcome = MembershipService.trust(executor, target.getUUID());
 		if (!outcome.success()) {
-			source.sendFailure(Component.literal("No tienes una isla."));
+			source.sendFailure(ServerLang.of(executor, "No tienes una isla.", "You don't have an island."));
 			return 0;
 		}
 
 		String targetName = target.getGameProfile().getName();
-		source.sendSuccess(() -> Component.literal(targetName + " ahora es copropietario de tu isla."), false);
+		source.sendSuccess(() -> ServerLang.of(executor, targetName + " ahora es copropietario de tu isla.", targetName + " is now a co-owner of your island."), false);
 
 		return 1;
 	}
@@ -908,50 +935,87 @@ public class IslandCommand {
 		ActionOutcome<Void> outcome = MembershipService.untrust(executor, target.getUUID());
 		if (!outcome.success()) {
 			if (ActionReason.NOT_CO_OWNER.equals(outcome.reason())) {
-				source.sendFailure(Component.literal(targetName + " no es copropietario de tu isla."));
+				source.sendFailure(ServerLang.of(executor, targetName + " no es copropietario de tu isla.", targetName + " is not a co-owner of your island."));
 			} else {
-				source.sendFailure(Component.literal("No tienes una isla."));
+				source.sendFailure(ServerLang.of(executor, "No tienes una isla.", "You don't have an island."));
 			}
 			return 0;
 		}
 
-		source.sendSuccess(() -> Component.literal(targetName + " ya no es copropietario de tu isla (sigue siendo miembro)."), false);
+		source.sendSuccess(() -> ServerLang.of(executor, targetName + " ya no es copropietario de tu isla (sigue siendo miembro).", targetName + " is no longer a co-owner of your island (still a member)."), false);
 
 		return 1;
 	}
 
-	private static int executeAllyAdd(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+	// Individual-player alliance management (IslandRole.ALLY via an explicit IslandMember) — same
+	// entry points MemberAllyAddC2S/MemberAllyRemoveC2S call from the client's Party menu. OWNER or
+	// CO_OWNER, unlike GameProfileArgumentType-resolved add/remove not requiring the TARGET to be
+	// online, same reasoning as executeInvite/executeKick.
+	private static int executeAllianceAdd(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
 		CommandSourceStack source = ctx.getSource();
-		ServerPlayer executor = source.getPlayerOrException();
-		ServerPlayer target = EntityArgument.getPlayer(ctx, "player");
+		ServerPlayer player = source.getPlayerOrException();
+		GameProfile targetProfile = GameProfileArgument.getGameProfiles(ctx, "player").iterator().next();
 
-		ActionOutcome<Void> outcome = MembershipService.allyAdd(executor, target.getUUID());
+		ActionOutcome<Void> outcome = MembershipService.allyAdd(player, targetProfile.getId());
 		if (!outcome.success()) {
-			source.sendFailure(Component.literal("No tienes una isla."));
+			sendAllianceError(source, outcome.reason());
 			return 0;
 		}
 
-		String targetName = target.getGameProfile().getName();
-		source.sendSuccess(() -> Component.literal(targetName + " ahora es aliado de tu isla."), false);
-
+		source.sendSuccess(() -> ServerLang.of(player, targetProfile.getName() + " ahora es aliado de tu isla.", targetProfile.getName() + " is now an ally of your island."), false);
 		return 1;
 	}
 
-	private static int executeAllyRemove(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+	private static int executeAllianceRemove(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
 		CommandSourceStack source = ctx.getSource();
-		ServerPlayer executor = source.getPlayerOrException();
-		ServerPlayer target = EntityArgument.getPlayer(ctx, "player");
+		ServerPlayer player = source.getPlayerOrException();
+		GameProfile targetProfile = GameProfileArgument.getGameProfiles(ctx, "player").iterator().next();
 
-		ActionOutcome<Void> outcome = MembershipService.allyRemove(executor, target.getUUID());
+		ActionOutcome<Void> outcome = MembershipService.allyRemove(player, targetProfile.getId());
 		if (!outcome.success()) {
-			source.sendFailure(Component.literal("No tienes una isla."));
+			sendAllianceError(source, outcome.reason());
 			return 0;
 		}
 
-		String targetName = target.getGameProfile().getName();
-		source.sendSuccess(() -> Component.literal(targetName + " ya no es aliado de tu isla."), false);
-
+		source.sendSuccess(() -> ServerLang.of(player, targetProfile.getName() + " ya no es aliado de tu isla.", targetProfile.getName() + " is no longer an ally of your island."), false);
 		return 1;
+	}
+
+	private static int executeAllianceList(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+		CommandSourceStack source = ctx.getSource();
+		ServerPlayer player = source.getPlayerOrException();
+
+		Optional<Island> maybeIsland = MembershipService.resolveManagedIsland(player.getUUID());
+		if (maybeIsland.isEmpty()) {
+			source.sendFailure(ServerLang.of(player, "No tienes una isla de la que seas propietario o copropietario.", "You don't have an island you own or co-own."));
+			return 0;
+		}
+		Island island = maybeIsland.get();
+		MinecraftServer server = source.getServer();
+
+		List<IslandMember> allies = island.getMembers().stream().filter(member -> member.role() == IslandRole.ALLY).toList();
+
+		source.sendSuccess(() -> ServerLang.of(player, "=== Aliados de tu isla ===", "=== Your island's allies ===").copy().withStyle(ChatFormatting.BOLD, ChatFormatting.AQUA), false);
+		if (allies.isEmpty()) {
+			source.sendSuccess(() -> ServerLang.of(player, "No tienes ningún aliado.", "You don't have any allies."), false);
+		} else {
+			for (IslandMember ally : allies) {
+				String name = server.getProfileCache().get(ally.playerUuid()).map(GameProfile::getName).orElse(ally.playerUuid().toString());
+				source.sendSuccess(() -> ServerLang.of(player, "- " + name, "- " + name), false);
+			}
+		}
+
+		return allies.size();
+	}
+
+	private static void sendAllianceError(CommandSourceStack source, String reason) {
+		String message = switch (reason) {
+			case ActionReason.NO_ISLAND -> "No tienes una isla de la que seas propietario o copropietario.";
+			case ActionReason.TARGET_NOT_FOUND -> "No se ha encontrado a ese jugador.";
+			case ActionReason.ALLIANCE_SELF -> "No puedes añadirte a ti mismo como aliado de tu propia isla.";
+			default -> "No se ha podido completar la acción.";
+		};
+		source.sendFailure(Component.literal(message));
 	}
 
 	private static int executeKick(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
@@ -963,14 +1027,14 @@ public class IslandCommand {
 		ActionOutcome<Void> outcome = MembershipService.kick(player, targetUuid, source.getServer());
 		if (!outcome.success()) {
 			if (ActionReason.NO_ISLAND.equals(outcome.reason())) {
-				source.sendFailure(Component.literal("No tienes ninguna isla todavía."));
+				source.sendFailure(ServerLang.of(player, "No tienes ninguna isla todavía.", "You don't have an island yet."));
 			} else {
-				source.sendFailure(Component.literal(targetProfile.getName() + " no es miembro de tu isla."));
+				source.sendFailure(ServerLang.of(player, targetProfile.getName() + " no es miembro de tu isla.", targetProfile.getName() + " is not a member of your island."));
 			}
 			return 0;
 		}
 
-		source.sendSuccess(() -> Component.literal(targetProfile.getName() + " ha sido expulsado de tu isla."), false);
+		source.sendSuccess(() -> ServerLang.of(player, targetProfile.getName() + " ha sido expulsado de tu isla.", targetProfile.getName() + " has been kicked from your island."), false);
 
 		return 1;
 	}
@@ -995,34 +1059,38 @@ public class IslandCommand {
 		ActionOutcome<Object> outcome = IslandActionService.changeBiome(player, biomeId, source.getServer());
 		if (!outcome.success()) {
 			switch (outcome.reason()) {
-				case ActionReason.NO_ISLAND -> source.sendFailure(Component.literal("No tienes ninguna isla todavía."));
+				case ActionReason.NO_ISLAND -> source.sendFailure(ServerLang.of(player, "No tienes ninguna isla todavía.", "You don't have an island yet."));
 				case ActionReason.NOT_OWNER ->
-						source.sendFailure(Component.literal("Solo el propietario de la isla puede cambiar su bioma."));
-				case ActionReason.BIOME_NOT_FOUND -> source.sendFailure(Component.literal("El bioma " + biomeId + " no existe."));
+						source.sendFailure(ServerLang.of(player, "Solo el propietario de la isla puede cambiar su bioma.", "Only the island owner can change its biome."));
+				case ActionReason.BIOME_NOT_FOUND -> source.sendFailure(ServerLang.of(player, "El bioma " + biomeId + " no existe.", "The biome " + biomeId + " does not exist."));
 				case ActionReason.BIOME_LOCKED -> {
 					List<String> tierIds = (List<String>) outcome.data();
 					if (tierIds == null || tierIds.isEmpty()) {
-						source.sendFailure(Component.literal("El bioma " + biomeId + " no está disponible."));
+						source.sendFailure(ServerLang.of(player, "El bioma " + biomeId + " no está disponible.", "The biome " + biomeId + " is not available."));
 					} else {
-						source.sendFailure(Component.literal("No tienes acceso al bioma " + biomeId
-								+ ". Se desbloquea con el/los tier(s): " + String.join(", ", tierIds) + "."));
+						source.sendFailure(ServerLang.of(player, "No tienes acceso al bioma " + biomeId
+								+ ". Se desbloquea con el/los tier(s): " + String.join(", ", tierIds) + ".",
+								"You don't have access to the biome " + biomeId
+								+ ". It unlocks with the tier(s): " + String.join(", ", tierIds) + "."));
 					}
 				}
 				case ActionReason.COOLDOWN_ACTIVE -> {
 					long remainingSeconds = (Long) outcome.data();
 					String remaining = formatDuration(Duration.ofSeconds(remainingSeconds));
-					source.sendFailure(Component.literal(
-							"Todavía no puedes volver a cambiar el bioma de tu isla. Podrás hacerlo en " + remaining + "."));
+					source.sendFailure(ServerLang.of(player,
+							"Todavía no puedes volver a cambiar el bioma de tu isla. Podrás hacerlo en " + remaining + ".",
+							"You can't change your island's biome again yet. You will be able to in " + remaining + "."));
 				}
 				case ActionReason.DIMENSION_UNAVAILABLE ->
-						source.sendFailure(Component.literal("La dimensión de tu isla no está disponible ahora mismo."));
+						source.sendFailure(ServerLang.of(player, "La dimensión de tu isla no está disponible ahora mismo.", "Your island's dimension is not available right now."));
 				default -> throw new IllegalStateException("Unhandled ActionReason from changeBiome: " + outcome.reason());
 			}
 			return 0;
 		}
 
-		source.sendSuccess(() -> Component.literal(
-				"Cambiando el bioma de tu isla a " + biomeId + "... puede tardar unos segundos en islas grandes."), false);
+		source.sendSuccess(() -> ServerLang.of(player,
+				"Cambiando el bioma de tu isla a " + biomeId + "... puede tardar unos segundos en islas grandes.",
+				"Changing your island's biome to " + biomeId + "... this may take a few seconds on large islands."), false);
 
 		return 1;
 	}
@@ -1124,7 +1192,7 @@ public class IslandCommand {
 
 		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(Island.SERVER_OWNER_UUID);
 		if (maybeIsland.isEmpty()) {
-			source.sendFailure(Component.literal("La isla de Spawn todavía no existe. Usa /island admin spawn create primero."));
+			source.sendFailure(ServerLang.of(player, "La isla de Spawn todavía no existe. Usa /island admin spawn create primero.", "The Spawn island doesn't exist yet. Use /island admin spawn create first."));
 			return 0;
 		}
 
@@ -1133,14 +1201,15 @@ public class IslandCommand {
 		boolean withinBuiltIsland = island.getBounds().contains(player.blockPosition());
 
 		if (!inIslandsDimension || !withinBuiltIsland) {
-			source.sendFailure(Component.literal("El home de la isla de Spawn debe fijarse dentro de la parte ya construida de esa isla."));
+			source.sendFailure(ServerLang.of(player, "El home de la isla de Spawn debe fijarse dentro de la parte ya construida de esa isla.", "The Spawn island's home must be set inside the already-built part of that island."));
 			return 0;
 		}
 
 		BlockPos pos = player.blockPosition();
 		IslandCoreMod.ISLAND_REGISTRY.updateHomeLocation(island.getIslandId(), pos);
 
-		source.sendSuccess(() -> Component.literal("Home de la isla de Spawn actualizado a ("
+		source.sendSuccess(() -> ServerLang.of(player, "Home de la isla de Spawn actualizado a ("
+				+ pos.getX() + ", " + pos.getY() + ", " + pos.getZ() + ").", "Spawn island's home updated to ("
 				+ pos.getX() + ", " + pos.getY() + ", " + pos.getZ() + ")."), false);
 
 		return 1;
@@ -1206,20 +1275,22 @@ public class IslandCommand {
 
 		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(target.getUUID());
 		if (maybeIsland.isEmpty()) {
-			source.sendFailure(Component.literal(target.getGameProfile().getName() + " no tiene ninguna isla."));
+			source.sendFailure(ServerLang.of(admin, target.getGameProfile().getName() + " no tiene ninguna isla.", target.getGameProfile().getName() + " doesn't have an island."));
 			return 0;
 		}
 
 		try {
 			IslandCoreMod.DELETION_SERVICE.requestDeletion(maybeIsland.get().getIslandId(), admin.getUUID());
 		} catch (IllegalArgumentException | IllegalStateException e) {
-			source.sendFailure(Component.literal(e.getMessage()));
+			source.sendFailure(ServerLang.of(admin, e.getMessage(), e.getMessage()));
 			return 0;
 		}
 
 		String targetName = target.getGameProfile().getName();
-		source.sendSuccess(() -> Component.literal("¿Seguro que quieres borrar la isla de " + targetName
-				+ "? Usa /island admin delete " + targetName + " confirm en los próximos 30 segundos."), false);
+		source.sendSuccess(() -> ServerLang.of(admin, "¿Seguro que quieres borrar la isla de " + targetName
+				+ "? Usa /island admin delete " + targetName + " confirm en los próximos 30 segundos.",
+				"Are you sure you want to delete " + targetName + "'s island"
+				+ "? Use /island admin delete " + targetName + " confirm within the next 30 seconds."), false);
 
 		return 1;
 	}
@@ -1231,18 +1302,40 @@ public class IslandCommand {
 
 		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(target.getUUID());
 		if (maybeIsland.isEmpty()) {
-			source.sendFailure(Component.literal(target.getGameProfile().getName() + " no tiene ninguna isla."));
+			source.sendFailure(ServerLang.of(admin, target.getGameProfile().getName() + " no tiene ninguna isla.", target.getGameProfile().getName() + " doesn't have an island."));
 			return 0;
 		}
 
 		boolean confirmed = IslandCoreMod.DELETION_SERVICE.confirmDeletion(maybeIsland.get().getIslandId(), admin.getUUID());
 		if (!confirmed) {
-			source.sendFailure(Component.literal("No hay ninguna solicitud de borrado pendiente (o ha expirado)."));
+			source.sendFailure(ServerLang.of(admin, "No hay ninguna solicitud de borrado pendiente (o ha expirado).", "There is no pending deletion request (or it has expired)."));
 			return 0;
 		}
 
 		String targetName = target.getGameProfile().getName();
-		source.sendSuccess(() -> Component.literal("La isla de " + targetName + " se está borrando..."), false);
+		source.sendSuccess(() -> ServerLang.of(admin, "La isla de " + targetName + " se está borrando...", targetName + "'s island is being deleted..."), false);
+
+		return 1;
+	}
+
+	// In-memory, per-connection toggle (see AdminOverrideState) — resets on reconnect, same as
+	// other per-connection admin states. While on, AccessControllerImpl treats this player as
+	// OWNER on every island (Spawn included) for every permission, no exceptions.
+	private static int executeAdminOverride(CommandContext<CommandSourceStack> ctx, boolean enable) throws CommandSyntaxException {
+		CommandSourceStack source = ctx.getSource();
+		ServerPlayer player = source.getPlayerOrException();
+
+		AdminOverrideState.setActive(player.getUUID(), enable);
+
+		if (enable) {
+			source.sendSuccess(() -> ServerLang.of(player,
+					"⚠ Modo override activado: tienes permisos de OWNER en CUALQUIER isla (incluida Spawn) hasta que "
+							+ "lo desactives con /island admin override off, o te reconectes.",
+					"⚠ Override mode enabled: you have OWNER permissions on ANY island (Spawn included) until you "
+							+ "disable it with /island admin override off, or reconnect.").copy().withStyle(ChatFormatting.RED), false);
+		} else {
+			source.sendSuccess(() -> ServerLang.of(player, "Modo override desactivado.", "Override mode disabled.").copy().withStyle(ChatFormatting.GRAY), false);
+		}
 
 		return 1;
 	}

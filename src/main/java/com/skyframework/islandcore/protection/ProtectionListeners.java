@@ -2,20 +2,23 @@ package com.skyframework.islandcore.protection;
 
 import com.skyframework.islandcore.IslandCoreMod;
 import com.skyframework.islandcore.api.island.Island;
+import com.skyframework.islandcore.util.ServerLang;
 
-import net.minecraft.world.item.BlockItem;
-import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.InteractionHand;
-import net.minecraft.world.InteractionResult;
-import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.MenuProvider;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.MenuProvider;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.BlockHitResult;
+
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.entity.player.AttackEntityEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
@@ -29,26 +32,35 @@ import net.neoforged.neoforge.event.level.BlockEvent;
 // for each of these).
 public class ProtectionListeners {
 
-	private static final Component NO_PERMISSION_MESSAGE = Component.literal("No tienes permiso para hacer esto aquí.");
-	private static final Component NO_ISLAND_MESSAGE = Component.literal("Esta zona no pertenece a ninguna isla.");
-	private static final Component RESERVED_PLOT_MESSAGE =
-			Component.literal("Esta zona está reservada para una futura ampliación de la isla.");
-
 	private ProtectionListeners() {
 	}
 
 	// Only meaningful to call after an action was denied: outside the islands dimension,
 	// AccessController always allows, so a deny here always means we're inside it. Mirrors
-	// AccessControllerImpl's classification purely to pick the right message.
-	private static Component denyMessage(BlockPos pos) {
+	// AccessControllerImpl's classification purely to pick the right message. Was 3 static final
+	// Text constants built once at class-load time — turned into a per-call method so each one can
+	// be picked per the RECEIVING player's own client language (see ServerLang) instead of a single
+	// server-wide value baked in at startup.
+	private static Component denyMessage(BlockPos pos, ServerPlayer player) {
 		Island island = IslandCoreMod.ISLAND_REGISTRY.getIslandAt(pos).orElse(null);
 		if (island == null) {
-			return NO_ISLAND_MESSAGE;
+			return ServerLang.of(player, "Esta zona no pertenece a ninguna isla.", "This area doesn't belong to any island.");
 		}
-		if (!island.getBounds().contains(pos)) {
-			return RESERVED_PLOT_MESSAGE;
+		if (!island.getBounds().contains(pos) && !isBeyondWorldHeightLimit(pos)) {
+			return ServerLang.of(player, "Esta zona está reservada para una futura ampliación de la isla.",
+					"This area is reserved for a future island expansion.");
 		}
-		return NO_PERMISSION_MESSAGE;
+		return ServerLang.of(player, "No tienes permiso para hacer esto aquí.", "You don't have permission to do this here.");
+	}
+
+	// Y=320 (one above the highest buildable layer) and Y=-64 (the world's own bottom — see
+	// IslandRegistryImpl's MIN_Y/MAX_Y, which already sets every island's own vertical bounds to
+	// exactly this same range) are the world's own absolute vertical limits, not this island's
+	// plot edge. Vanilla already shows its own "outside the world" message there, so
+	// RESERVED_PLOT_MESSAGE — meant for the island's horizontal/plot boundary — would just be a
+	// confusing, redundant second message stacked on top of it.
+	private static boolean isBeyondWorldHeightLimit(BlockPos pos) {
+		return pos.getY() >= 320 || pos.getY() <= -64;
 	}
 
 	public static void register() {
@@ -69,7 +81,7 @@ public class ProtectionListeners {
 			return;
 		}
 
-		DeniedActionThrottler.notifyDenied(player, denyMessage(pos));
+		DeniedActionThrottler.notifyDenied(player, denyMessage(pos, (ServerPlayer) player));
 		event.setCanceled(true);
 	}
 
@@ -104,7 +116,7 @@ public class ProtectionListeners {
 			return;
 		}
 
-		DeniedActionThrottler.notifyDenied(player, denyMessage(checkedPos));
+		DeniedActionThrottler.notifyDenied(player, denyMessage(checkedPos, (ServerPlayer) player));
 		event.setCanceled(true);
 		event.setCancellationResult(InteractionResult.FAIL);
 	}
@@ -121,7 +133,7 @@ public class ProtectionListeners {
 			return;
 		}
 
-		DeniedActionThrottler.notifyDenied(player, denyMessage(entity.blockPosition()));
+		DeniedActionThrottler.notifyDenied(player, denyMessage(entity.blockPosition(), (ServerPlayer) player));
 		event.setCanceled(true);
 		event.setCancellationResult(InteractionResult.FAIL);
 	}
@@ -139,7 +151,7 @@ public class ProtectionListeners {
 			return;
 		}
 
-		DeniedActionThrottler.notifyDenied(player, denyMessage(entity.blockPosition()));
+		DeniedActionThrottler.notifyDenied(player, denyMessage(entity.blockPosition(), (ServerPlayer) player));
 		event.setCanceled(true);
 	}
 }

@@ -6,6 +6,8 @@ license="${mod_license}"
 modId="${mod_id}" #mandatory
 version="${mod_version}" #mandatory
 displayName="${mod_name}" #mandatory
+logoFile="assets/islandcore/icon.png"
+authors="SkyFramework Team"
 description='''
 Núcleo del sistema de islas flotantes para servidores NeoForge 1.21.1 — puerto de IslandCore (Fabric).
 '''

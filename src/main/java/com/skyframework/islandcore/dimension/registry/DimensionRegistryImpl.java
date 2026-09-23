@@ -10,22 +10,23 @@ import com.skyframework.islandcore.dimension.runtime.DimensionRuntimeProvider;
 import com.skyframework.islandcore.dimension.storage.DimensionStorage;
 import com.skyframework.islandcore.dimension.storage.NbtDimensionStorage;
 import com.skyframework.islandcore.teleport.TeleportBackend;
+import com.skyframework.islandcore.dimension.generation.EndSpawnPlatformGenerator;
+import com.skyframework.islandcore.util.ServerLang;
 
-import net.neoforged.neoforge.common.NeoForge;
-import net.neoforged.neoforge.event.server.ServerStartedEvent;
-import net.neoforged.neoforge.event.tick.ServerTickEvent;
-
+import net.minecraft.ChatFormatting;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.network.chat.Component;
-import net.minecraft.ChatFormatting;
-import net.minecraft.world.level.storage.LevelResource;
-import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.storage.LevelResource;
+
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.server.ServerStartedEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 import java.nio.file.Path;
 import java.time.Duration;
@@ -90,7 +91,8 @@ public class DimensionRegistryImpl implements DimensionRegistry {
 			// dimension is re-materialized right here, on every boot, rather than leaving that up
 			// to a separate step that might not run.
 			if (server != null) {
-				runtimeProvider.createOrLoadWorld(dimension, server);
+				ServerLevel world = runtimeProvider.createOrLoadWorld(dimension, server);
+				ensureEndSpawnPlatform(dimension, world);
 			}
 		}
 
@@ -143,7 +145,8 @@ public class DimensionRegistryImpl implements DimensionRegistry {
 		saveIfStorageReady(dimension);
 
 		if (server != null) {
-			runtimeProvider.createOrLoadWorld(dimension, server);
+			ServerLevel world = runtimeProvider.createOrLoadWorld(dimension, server);
+			ensureEndSpawnPlatform(dimension, world);
 		}
 
 		return dimension;
@@ -285,12 +288,16 @@ public class DimensionRegistryImpl implements DimensionRegistry {
 		}
 
 		String action = request.regenerate ? "regenerará" : "eliminará";
+		String actionEn = request.regenerate ? "will regenerate" : "will be deleted";
 		String confirmCommand = request.regenerate ? "/dimension regenerate" : "/dimension delete";
 
 		player.displayClientMessage(
-				Component.literal("Dimensión " + id.getPath() + " se " + action + " en " + secondsRemaining + "s - "
-						+ confirmCommand + " " + id.getPath() + " confirm para confirmar")
-						.withStyle(ChatFormatting.RED),
+				ServerLang.of(player,
+								"Dimensión " + id.getPath() + " se " + action + " en " + secondsRemaining + "s - "
+										+ confirmCommand + " " + id.getPath() + " confirm para confirmar",
+								"Dimension " + id.getPath() + " " + actionEn + " in " + secondsRemaining + "s - "
+										+ confirmCommand + " " + id.getPath() + " confirm to confirm")
+						.copy().withStyle(ChatFormatting.RED),
 				true);
 	}
 
@@ -300,7 +307,9 @@ public class DimensionRegistryImpl implements DimensionRegistry {
 			return;
 		}
 
-		player.sendSystemMessage(Component.literal("La solicitud sobre la dimensión " + id.getPath() + " ha caducado."));
+		player.sendSystemMessage(ServerLang.of(player,
+				"La solicitud sobre la dimensión " + id.getPath() + " ha caducado.",
+				"The request for dimension " + id.getPath() + " has expired."));
 	}
 
 	private void tickPendingRemovals() {
@@ -331,7 +340,8 @@ public class DimensionRegistryImpl implements DimensionRegistry {
 			dimension.setSeed(removal.newSeedIfRegenerating);
 			dimension.setState(DimensionState.ACTIVE);
 			saveIfStorageReady(dimension);
-			runtimeProvider.createOrLoadWorld(dimension, server);
+			ServerLevel world = runtimeProvider.createOrLoadWorld(dimension, server);
+			ensureEndSpawnPlatform(dimension, world);
 		} else {
 			if (storage != null) {
 				storage.delete(id);
@@ -380,6 +390,22 @@ public class DimensionRegistryImpl implements DimensionRegistry {
 		if (storage != null) {
 			storage.save(dimension);
 		}
+	}
+
+	// Called every time an END_LIKE dimension's world becomes live (fresh creation, every server
+	// boot's re-materialization, and after a regeneration) rather than only once at creation — cheap
+	// (9 blocks) and idempotent, so it also self-heals any pre-existing END_LIKE dimension that was
+	// created before this platform existed, or one where the platform got griefed away. resolveSafeLanding's
+	// own step1 (direct spawnPos check) then always succeeds immediately for world.getSpawnPos(), no
+	// fallback search needed — the far-from-spawn "last known position" case is untouched by this.
+	private void ensureEndSpawnPlatform(DimensionData dimension, ServerLevel world) {
+		if (dimension.getGeneratorStyle() != DimensionGeneratorStyle.END_LIKE || world == null) {
+			return;
+		}
+
+		BlockPos spawnPos = world.getSharedSpawnPos();
+		world.getChunk(spawnPos.getX() >> 4, spawnPos.getZ() >> 4);
+		EndSpawnPlatformGenerator.generate(world, spawnPos);
 	}
 
 	// lastNotifiedSecond tracks the countdown value last shown on the action bar, so

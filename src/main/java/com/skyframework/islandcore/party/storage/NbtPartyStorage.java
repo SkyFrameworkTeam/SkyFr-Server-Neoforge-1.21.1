@@ -4,11 +4,11 @@ import com.skyframework.islandcore.IslandCoreMod;
 import com.skyframework.islandcore.party.model.PartyData;
 
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.Tag;
-import net.minecraft.nbt.NbtIo;
-import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.NbtAccounter;
+import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.StringTag;
+import net.minecraft.nbt.Tag;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -110,7 +110,6 @@ public class NbtPartyStorage implements PartyStorage {
 		nbt.putString("name", party.getName());
 		nbt.putUUID("leaderUuid", party.getLeaderUuid());
 		nbt.put("members", uuidListToNbt(party.getMembers()));
-		nbt.put("alliedPartyIds", uuidListToNbt(party.getAlliedPartyIds()));
 		nbt.putLong("createdAt", party.getCreatedAt().toEpochMilli());
 		nbt.putLong("updatedAt", party.getUpdatedAt().toEpochMilli());
 
@@ -122,11 +121,10 @@ public class NbtPartyStorage implements PartyStorage {
 		String name = nbt.getString("name");
 		UUID leaderUuid = nbt.getUUID("leaderUuid");
 		Set<UUID> members = uuidListFromNbt(nbt.getList("members", Tag.TAG_STRING));
-		Set<UUID> alliedPartyIds = uuidListFromNbt(nbt.getList("alliedPartyIds", Tag.TAG_STRING));
 		Instant createdAt = Instant.ofEpochMilli(nbt.getLong("createdAt"));
 		Instant updatedAt = Instant.ofEpochMilli(nbt.getLong("updatedAt"));
 
-		return new PartyData(partyId, name, leaderUuid, members, alliedPartyIds, createdAt, updatedAt);
+		return new PartyData(partyId, name, leaderUuid, members, createdAt, updatedAt);
 	}
 
 	private static ListTag uuidListToNbt(Collection<UUID> uuids) {

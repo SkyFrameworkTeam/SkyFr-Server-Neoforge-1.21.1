@@ -5,9 +5,9 @@ import com.skyframework.islandcore.party.storage.NbtPartyStorage;
 import com.skyframework.islandcore.party.storage.PartyStorage;
 
 import net.minecraft.world.level.storage.LevelResource;
+
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
-
 
 import java.nio.file.Path;
 import java.time.Instant;
@@ -119,24 +119,6 @@ public class PartyRegistryImpl implements PartyRegistry {
 		PartyData party = partiesById.get(partyId);
 		if (party != null) {
 			party.removeMember(playerUuid);
-			saveIfStorageReady(party);
-		}
-	}
-
-	@Override
-	public void addAlly(UUID partyId, UUID targetPartyId) {
-		PartyData party = partiesById.get(partyId);
-		if (party != null) {
-			party.addAlly(targetPartyId);
-			saveIfStorageReady(party);
-		}
-	}
-
-	@Override
-	public void removeAlly(UUID partyId, UUID targetPartyId) {
-		PartyData party = partiesById.get(partyId);
-		if (party != null) {
-			party.removeAlly(targetPartyId);
 			saveIfStorageReady(party);
 		}
 	}

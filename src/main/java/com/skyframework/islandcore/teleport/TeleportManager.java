@@ -2,6 +2,7 @@ package com.skyframework.islandcore.teleport;
 
 import com.skyframework.islandcore.api.network.ActionOutcome;
 
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.util.UUID;
@@ -20,6 +21,20 @@ public interface TeleportManager {
 	ActionOutcome<Void> requestSpawn(ServerPlayer player);
 
 	ActionOutcome<Void> requestFarming(ServerPlayer player);
+
+	// Dynamic-teleports section (Sprint "teletransportes dinámicos"): dimensionId is any
+	// DIMENSION_REGISTRY dimension. When it equals FarmingConfig's own target, this delegates
+	// straight to requestFarming (same cooldown, same safe-landing-at-world-spawn behavior, same
+	// PendingTeleport.Kind.FARMING) instead of duplicating that logic — every other dimension has
+	// no cooldown of its own and lands at the player's last known position in it (or the world's
+	// spawn point, safe-landing-corrected, on a first visit).
+	ActionOutcome<Void> requestDimensionTeleport(ServerPlayer player, ResourceLocation dimensionId);
+
+	// Fixed teleport to the real vanilla minecraft:overworld dimension (not a DIMENSION_REGISTRY
+	// entry) — TeleportsScreen's "Overworld" button. Same safe-landing/fallback mechanism as
+	// requestDimensionTeleport, anchored at the player's last known Overworld position (or the
+	// world's own spawn point on a first use), no cooldown.
+	ActionOutcome<Void> requestOverworldTeleport(ServerPlayer player);
 
 	// Unlike the three above, /rtp is a single synchronous action (no warmup countdown), so this
 	// one follows the same "pure outcome, caller formats every message" convention as
@@ -44,4 +59,9 @@ public interface TeleportManager {
 	long getFarmingCooldownRemainingSeconds(UUID playerUuid);
 
 	long getRtpCooldownRemainingSeconds(UUID playerUuid);
+
+	// Same peek convention as the four above: 0 unless dimensionId equals FarmingConfig's own
+	// target, in which case it mirrors getFarmingCooldownRemainingSeconds — every other dimension
+	// has no cooldown of its own.
+	long getDimensionCooldownRemainingSeconds(UUID playerUuid, ResourceLocation dimensionId);
 }

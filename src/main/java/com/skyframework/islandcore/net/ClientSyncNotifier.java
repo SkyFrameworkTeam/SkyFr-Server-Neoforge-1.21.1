@@ -4,20 +4,19 @@ import com.skyframework.islandcore.IslandCoreMod;
 import com.skyframework.islandcore.api.island.Island;
 import com.skyframework.islandcore.net.island.IslandSnapshotBuilder;
 
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
+
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import net.neoforged.neoforge.event.server.ServerStoppingEvent;
+import org.jetbrains.annotations.Nullable;
 import net.neoforged.neoforge.network.PacketDistributor;
-
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerPlayer;
 
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-
-import org.jetbrains.annotations.Nullable;
 
 /**
  * Mechanism only for this sprint: nothing in IslandRegistry/DeletionService/etc. calls

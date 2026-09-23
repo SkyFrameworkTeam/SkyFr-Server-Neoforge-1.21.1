@@ -6,20 +6,21 @@ import com.skyframework.islandcore.api.network.ActionOutcome;
 import com.skyframework.islandcore.api.network.ActionReason;
 import com.skyframework.islandcore.api.permission.IslandPermissions;
 import com.skyframework.islandcore.rtp.SafeRandomTeleportFinder;
+import com.skyframework.islandcore.dimension.model.DimensionDefinition;
+import com.skyframework.islandcore.util.ServerLang;
+
+import net.minecraft.ChatFormatting;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.Level;
 
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
-
-import net.minecraft.resources.ResourceKey;
-import net.minecraft.core.registries.Registries;
-import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.level.ServerLevel;
-import net.minecraft.network.chat.Component;
-import net.minecraft.ChatFormatting;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.core.BlockPos;
-import net.minecraft.world.level.Level;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -33,6 +34,21 @@ public class TeleportManagerImpl implements TeleportManager {
 
 	// TODO: make configurable once a general config system exists.
 	private static final int HOME_WARMUP_TICKS = 60;
+
+	// Deliberately its own constant, not SafeLocationFinder.DEFAULT_SEARCH_RADIUS (16, shared by
+	// RTP/home/spawn/void rescue — left untouched): only resolveSafeLanding's dynamic-dimension-
+	// landing search uses this. Raised from 256 to 1024 (Sprint "aterrizaje seguro" investigation,
+	// part 2) after real captured data showed a repeat-visit anchor can sit in a void gap wider than
+	// 256 blocks in every direction (findNearestSafeHeightAware's 45 real samples around (400,300) in
+	// a test END_LIKE dimension all landed in void_air) — 1024 matches TheEndBiomeSource's own
+	// documented "center" biome extent (see findNearestSafeHeightAware's own comment), giving the
+	// search a real chance to reach the main island cluster from most anchors instead of only ever
+	// covering a quarter of it. findNearestSafeHeightAware bounds its cost by attempt count (45 total),
+	// not by columns-in-range, so this stays just as cheap as 256 was — same number of chunk
+	// loads/heightmap checks either way, just spread across a wider area. This never fully guarantees a
+	// hit (real void gaps can still exceed even this), which is exactly why the fallback chain below
+	// (own home → Spawn home → inform without moving) exists as the last resort, not a bug to fix here.
+	private static final int DIMENSION_LANDING_SEARCH_RADIUS = 1024;
 
 	private static final double CANCEL_MOVE_DISTANCE = 0.5;
 
@@ -62,14 +78,14 @@ public class TeleportManagerImpl implements TeleportManager {
 
 		Optional<Island> maybeIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(playerUuid);
 		if (maybeIsland.isEmpty()) {
-			player.sendSystemMessage(Component.literal("No tienes ninguna isla todavía."));
+			player.sendSystemMessage(ServerLang.of(player, "No tienes ninguna isla todavía.", "You don't have an island yet."));
 			return ActionOutcome.fail(ActionReason.NO_ISLAND);
 		}
 
 		Island island = maybeIsland.get();
 		BlockPos home = island.getHomeLocation();
 		if (home == null) {
-			player.sendSystemMessage(Component.literal("Tu isla no tiene un home asignado."));
+			player.sendSystemMessage(ServerLang.of(player, "Tu isla no tiene un home asignado.", "Your island doesn't have a home set."));
 			return ActionOutcome.fail(ActionReason.HOME_NOT_SET);
 		}
 
@@ -82,8 +98,9 @@ public class TeleportManagerImpl implements TeleportManager {
 				long elapsedMillis = Duration.between(last, Instant.now()).toMillis();
 				if (elapsedMillis < cooldownMillis) {
 					long remainingSeconds = (cooldownMillis - elapsedMillis + 999) / 1000;
-					player.sendSystemMessage(Component.literal(
-							"Debes esperar " + remainingSeconds + " segundos más para volver a usar /island home."));
+					player.sendSystemMessage(ServerLang.of(player,
+							"Debes esperar " + remainingSeconds + " segundos más para volver a usar /island home.",
+							"You must wait " + remainingSeconds + " more seconds before using /island home again."));
 					return ActionOutcome.fail(ActionReason.COOLDOWN_ACTIVE);
 				}
 			}
@@ -97,8 +114,9 @@ public class TeleportManagerImpl implements TeleportManager {
 			BlockPos center = island.getCenter();
 			IslandCoreMod.ISLAND_REGISTRY.updateHomeLocation(island.getIslandId(), center);
 			home = center;
-			player.sendSystemMessage(Component.literal(
-					"Tu home estaba fuera de los límites actuales de tu isla; se ha reajustado al centro."));
+			player.sendSystemMessage(ServerLang.of(player,
+					"Tu home estaba fuera de los límites actuales de tu isla; se ha reajustado al centro.",
+					"Your home was outside your island's current bounds; it has been reset to the center."));
 		}
 
 		// Homes set before SafeLandingChecker existed (via /island sethome without validation), or
@@ -116,8 +134,9 @@ public class TeleportManagerImpl implements TeleportManager {
 					.orElseGet(island::getCenter);
 			IslandCoreMod.ISLAND_REGISTRY.updateHomeLocation(island.getIslandId(), safe);
 			home = safe;
-			player.sendSystemMessage(Component.literal(
-					"Tu home no tenía suelo seguro debajo; se ha reajustado a un punto seguro cercano."));
+			player.sendSystemMessage(ServerLang.of(player,
+					"Tu home no tenía suelo seguro debajo; se ha reajustado a un punto seguro cercano.",
+					"Your home had no safe ground beneath it; it has been reset to a nearby safe spot."));
 		}
 
 		pending.put(playerUuid, new PendingTeleport(
@@ -125,7 +144,7 @@ public class TeleportManagerImpl implements TeleportManager {
 
 		// Neutral confirmation only: the green countdown numbers (below, in tickAll) carry the
 		// actual "X seconds left" information, starting almost immediately after this.
-		player.sendSystemMessage(Component.literal("Preparando teletransporte a tu isla. No te muevas ni recibas daño."));
+		player.sendSystemMessage(ServerLang.of(player, "Preparando teletransporte a tu isla. No te muevas ni recibas daño.", "Preparing teleport to your island. Don't move or take damage."));
 		return ActionOutcome.ok();
 	}
 
@@ -135,7 +154,7 @@ public class TeleportManagerImpl implements TeleportManager {
 
 		Optional<Island> maybeSpawnIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(Island.SERVER_OWNER_UUID);
 		if (maybeSpawnIsland.isEmpty()) {
-			player.sendSystemMessage(Component.literal("La isla de Spawn todavía no existe."));
+			player.sendSystemMessage(ServerLang.of(player, "La isla de Spawn todavía no existe.", "The Spawn island doesn't exist yet."));
 			return ActionOutcome.fail(ActionReason.SPAWN_NOT_EXISTS);
 		}
 
@@ -151,8 +170,9 @@ public class TeleportManagerImpl implements TeleportManager {
 					.orElseGet(spawnIsland::getCenter);
 			IslandCoreMod.ISLAND_REGISTRY.updateHomeLocation(spawnIsland.getIslandId(), safe);
 			home = safe;
-			player.sendSystemMessage(Component.literal(
-					"El home de Spawn no tenía suelo seguro debajo; se ha reajustado a un punto seguro cercano."));
+			player.sendSystemMessage(ServerLang.of(player,
+					"El home de Spawn no tenía suelo seguro debajo; se ha reajustado a un punto seguro cercano.",
+					"The Spawn home had no safe ground beneath it; it has been reset to a nearby safe spot."));
 		}
 
 		if (!IslandCoreMod.PERMISSION_PROVIDER.hasPermission(playerUuid, IslandPermissions.SPAWN_COOLDOWN_BYPASS)) {
@@ -162,8 +182,9 @@ public class TeleportManagerImpl implements TeleportManager {
 				long elapsedMillis = Duration.between(last, Instant.now()).toMillis();
 				if (elapsedMillis < cooldownMillis) {
 					long remainingSeconds = (cooldownMillis - elapsedMillis + 999) / 1000;
-					player.sendSystemMessage(Component.literal(
-							"Debes esperar " + remainingSeconds + " segundos más para volver a usar /spawn."));
+					player.sendSystemMessage(ServerLang.of(player,
+							"Debes esperar " + remainingSeconds + " segundos más para volver a usar /spawn.",
+							"You must wait " + remainingSeconds + " more seconds before using /spawn again."));
 					return ActionOutcome.fail(ActionReason.COOLDOWN_ACTIVE);
 				}
 			}
@@ -172,7 +193,7 @@ public class TeleportManagerImpl implements TeleportManager {
 		pending.put(playerUuid, new PendingTeleport(
 				playerUuid, spawnIsland.getDimension(), home, player.position(), HOME_WARMUP_TICKS, PendingTeleport.Kind.SPAWN));
 
-		player.sendSystemMessage(Component.literal("Preparando teletransporte al spawn. No te muevas ni recibas daño."));
+		player.sendSystemMessage(ServerLang.of(player, "Preparando teletransporte al spawn. No te muevas ni recibas daño.", "Preparing teleport to spawn. Don't move or take damage."));
 		return ActionOutcome.ok();
 	}
 
@@ -189,8 +210,16 @@ public class TeleportManagerImpl implements TeleportManager {
 		// there's nothing to compute without a live world to ask.
 		ServerLevel world = server != null ? server.getLevel(targetDimension) : null;
 		if (world == null) {
-			player.sendSystemMessage(Component.literal("La dimensión de farmeo no está disponible ahora mismo."));
+			player.sendSystemMessage(ServerLang.of(player, "La dimensión de farmeo no está disponible ahora mismo.", "The farming dimension isn't available right now."));
 			return ActionOutcome.fail(ActionReason.DIMENSION_UNAVAILABLE);
+		}
+
+		Optional<LandingResult> landing = resolveDynamicDimensionLanding(player, world, targetDimension, world.getSharedSpawnPos());
+		if (landing.isEmpty()) {
+			player.sendSystemMessage(ServerLang.of(player,
+					"No se ha podido encontrar ningún lugar seguro donde teletransportarte.",
+					"Couldn't find any safe location to teleport you to."));
+			return ActionOutcome.fail(ActionReason.DIMENSION_NO_SAFE_LOCATION);
 		}
 
 		if (!IslandCoreMod.PERMISSION_PROVIDER.hasPermission(playerUuid, IslandPermissions.FARMING_COOLDOWN_BYPASS)) {
@@ -200,18 +229,201 @@ public class TeleportManagerImpl implements TeleportManager {
 				long elapsedMillis = Duration.between(last, Instant.now()).toMillis();
 				if (elapsedMillis < cooldownMillis) {
 					long remainingSeconds = (cooldownMillis - elapsedMillis + 999) / 1000;
-					player.sendSystemMessage(Component.literal(
-							"Debes esperar " + remainingSeconds + " segundos más para volver a usar /farming."));
+					player.sendSystemMessage(ServerLang.of(player,
+							"Debes esperar " + remainingSeconds + " segundos más para volver a usar /farming.",
+							"You must wait " + remainingSeconds + " more seconds before using /farming again."));
 					return ActionOutcome.fail(ActionReason.COOLDOWN_ACTIVE);
 				}
 			}
 		}
 
+		LandingResult resolvedLanding = landing.get();
 		pending.put(playerUuid, new PendingTeleport(
-				playerUuid, targetDimension, world.getSharedSpawnPos(), player.position(), HOME_WARMUP_TICKS, PendingTeleport.Kind.FARMING));
+				playerUuid, resolvedLanding.dimension(), resolvedLanding.pos(), player.position(), HOME_WARMUP_TICKS,
+				kindFor(resolvedLanding.fallback(), PendingTeleport.Kind.FARMING)));
 
-		player.sendSystemMessage(Component.literal("Preparando teletransporte a la zona de farmeo. No te muevas ni recibas daño."));
+		player.sendSystemMessage(ServerLang.of(player, "Preparando teletransporte a la zona de farmeo. No te muevas ni recibas daño.", "Preparing teleport to the farming zone. Don't move or take damage."));
 		return ActionOutcome.ok();
+	}
+
+	@Override
+	public ActionOutcome<Void> requestOverworldTeleport(ServerPlayer player) {
+		UUID playerUuid = player.getUUID();
+
+		ServerLevel world = server != null ? server.getLevel(Level.OVERWORLD) : null;
+		if (world == null) {
+			player.sendSystemMessage(ServerLang.of(player, "El Overworld no está disponible ahora mismo.", "The Overworld isn't available right now."));
+			return ActionOutcome.fail(ActionReason.DIMENSION_UNAVAILABLE);
+		}
+
+		// Same anchor idiom as requestDimensionTeleport: resume where the player last stood in the
+		// Overworld, or its own spawn point on a first use.
+		BlockPos anchor = IslandCoreMod.PLAYER_LAST_POSITION_STORE.getLastPosition(playerUuid, Level.OVERWORLD.location())
+				.orElseGet(world::getSharedSpawnPos);
+		Optional<LandingResult> landing = resolveDynamicDimensionLanding(player, world, Level.OVERWORLD, anchor);
+		if (landing.isEmpty()) {
+			player.sendSystemMessage(ServerLang.of(player,
+					"No se ha podido encontrar ningún lugar seguro donde teletransportarte.",
+					"Couldn't find any safe location to teleport you to."));
+			return ActionOutcome.fail(ActionReason.DIMENSION_NO_SAFE_LOCATION);
+		}
+
+		LandingResult resolvedLanding = landing.get();
+		pending.put(playerUuid, new PendingTeleport(
+				playerUuid, resolvedLanding.dimension(), resolvedLanding.pos(), player.position(), HOME_WARMUP_TICKS,
+				kindFor(resolvedLanding.fallback(), PendingTeleport.Kind.OVERWORLD)));
+
+		player.sendSystemMessage(ServerLang.of(player, "Preparando teletransporte al Overworld. No te muevas ni recibas daño.", "Preparing teleport to the Overworld. Don't move or take damage."));
+		return ActionOutcome.ok();
+	}
+
+	private static PendingTeleport.Kind kindFor(FallbackKind fallback, PendingTeleport.Kind targetKind) {
+		return switch (fallback) {
+			case TARGET -> targetKind;
+			case OWN_HOME -> PendingTeleport.Kind.RESCUE_HOME;
+			case SPAWN_HOME -> PendingTeleport.Kind.RESCUE_SPAWN;
+		};
+	}
+
+	@Override
+	public ActionOutcome<Void> requestDimensionTeleport(ServerPlayer player, ResourceLocation dimensionId) {
+		// The farming dimension keeps its own cooldown/safe-landing behavior unchanged, whichever
+		// DIMENSION_REGISTRY slot it happens to occupy — see the class javadoc on TeleportManager.
+		if (dimensionId.equals(IslandCoreMod.FARMING_CONFIG.getTargetDimension())) {
+			return requestFarming(player);
+		}
+
+		UUID playerUuid = player.getUUID();
+
+		if (IslandCoreMod.DIMENSION_REGISTRY.getDimension(dimensionId).isEmpty()) {
+			player.sendSystemMessage(ServerLang.of(player, "Esa dimensión ya no existe.", "That dimension no longer exists."));
+			return ActionOutcome.fail(ActionReason.DIMENSION_UNAVAILABLE);
+		}
+
+		ResourceKey<Level> targetDimension = ResourceKey.create(Registries.DIMENSION, dimensionId);
+		ServerLevel world = server != null ? server.getLevel(targetDimension) : null;
+		if (world == null) {
+			player.sendSystemMessage(ServerLang.of(player, "Esa dimensión no está disponible ahora mismo.", "That dimension isn't available right now."));
+			return ActionOutcome.fail(ActionReason.DIMENSION_UNAVAILABLE);
+		}
+
+		// Second-or-later visit resumes where the player left off (heightmap/SafeLocationFinder as a
+		// backup if the terrain there is no longer safe); a first visit has nothing stored yet, so
+		// it falls back to the world's own spawn point, same as every other dimension's first visit.
+		BlockPos anchor = IslandCoreMod.PLAYER_LAST_POSITION_STORE.getLastPosition(playerUuid, dimensionId)
+				.orElseGet(world::getSharedSpawnPos);
+		Optional<LandingResult> landing = resolveDynamicDimensionLanding(player, world, targetDimension, anchor);
+		if (landing.isEmpty()) {
+			player.sendSystemMessage(ServerLang.of(player,
+					"No se ha podido encontrar ningún lugar seguro donde teletransportarte.",
+					"Couldn't find any safe location to teleport you to."));
+			return ActionOutcome.fail(ActionReason.DIMENSION_NO_SAFE_LOCATION);
+		}
+
+		// No cooldown for generic dynamic dimensions (per spec) — no Kind-specific lastXAt map to
+		// check or update here, unlike HOME/SPAWN/FARMING above.
+		LandingResult resolvedLanding = landing.get();
+		pending.put(playerUuid, new PendingTeleport(
+				playerUuid, resolvedLanding.dimension(), resolvedLanding.pos(), player.position(), HOME_WARMUP_TICKS,
+				kindFor(resolvedLanding.fallback(), PendingTeleport.Kind.DIMENSION)));
+
+		player.sendSystemMessage(ServerLang.of(player, "Preparando teletransporte. No te muevas ni recibas daño.", "Preparing teleport. Don't move or take damage."));
+		return ActionOutcome.ok();
+	}
+
+	// A column picked without any regard for what's actually there — world.getSpawnPos() for a
+	// generated dimension, or a player's last known position in a dimension that may have
+	// regenerated since — is never guaranteed to be safe to land on (that's exactly what players
+	// were hitting: suffocating underground right after /island farming). Unlike requestHome/
+	// requestSpawn (whose target is a specific, arbitrary block that can only ever lose its footing
+	// one block at a time), targetPos here is a single fixed, known column, so first try correcting
+	// straight up that column via the world's heightmap — same idiom SafeRandomTeleportFinder
+	// already uses for /island rtp — before falling back to SafeLocationFinder's outward 2D search
+	// (used by requestHome/requestSpawn) and, as a last resort, the untouched raw targetPos.
+	//
+	// Generalized from the farming-only resolveSafeFarmingSpawn(world) (Sprint "teletransportes
+	// dinámicos"): the logic never actually depended on farming, only on "a single fixed column" —
+	// now reused for both the farming dimension (still anchored to world.getSpawnPos(), unchanged)
+	// and every other dynamic dimension (anchored to the player's last known position in it, or
+	// world.getSpawnPos() on a first visit — see requestDimensionTeleport).
+	// Returns empty only when NO safe spot could be found anywhere within the search radius of
+	// targetPos — e.g. END_LIKE's world spawn falling in the void between islands with the nearest
+	// island outside SafeLocationFinder's search radius, or a column that genuinely never generated
+	// solid ground. Callers fall back further (see resolveDynamicDimensionLanding) instead of
+	// silently teleporting into that emptiness the way this used to (returning targetPos unchanged).
+	private Optional<BlockPos> resolveSafeLanding(ServerLevel world, BlockPos targetPos) {
+		if (SafeLandingChecker.isSafe(world, targetPos)) {
+			return Optional.of(targetPos);
+		}
+
+		world.getChunk(targetPos.getX() >> 4, targetPos.getZ() >> 4);
+		int topY = SafeLocationFinder.resolveTopY(world, targetPos.getX(), targetPos.getZ());
+		BlockPos aboveTerrain = new BlockPos(targetPos.getX(), topY, targetPos.getZ());
+		if (SafeLandingChecker.isSafe(world, aboveTerrain)) {
+			return Optional.of(aboveTerrain);
+		}
+
+		// aboveTerrain's Y is discarded here — findNearestSafeHeightAware re-samples the heightmap
+		// per candidate column (see its own doc), so reusing a Y computed for THIS column would be
+		// meaningless for any other one. Centering on targetPos's own X/Z is what actually matters.
+		return SafeLocationFinder.findNearestSafeHeightAware(world, targetPos, DIMENSION_LANDING_SEARCH_RADIUS);
+	}
+
+	// Where FallbackKind.TARGET means "found near the dimension's own landing point" (the common
+	// case) and OWN_HOME/SPAWN_HOME mean the safety net kicked in — see PendingTeleport.Kind's
+	// RESCUE_HOME/RESCUE_SPAWN, which completeTeleport uses to message this accurately without
+	// charging either cooldown for an involuntary rescue.
+	private enum FallbackKind {
+		TARGET, OWN_HOME, SPAWN_HOME
+	}
+
+	private record LandingResult(ResourceKey<Level> dimension, BlockPos pos, FallbackKind fallback) {
+	}
+
+	// Tries resolveSafeLanding near targetPos first (the common case — nearby search only, no
+	// dimension change). If that finds nothing at all, falls back in priority order to the player's
+	// own island home, then the Spawn island's home, each only if it's still actually safe — same
+	// priority VoidRescueListener already uses for its own out-of-world safety net. Empty only when
+	// none of the three panned out; callers must not move the player in that case.
+	private Optional<LandingResult> resolveDynamicDimensionLanding(
+			ServerPlayer player, ServerLevel world, ResourceKey<Level> worldKey, BlockPos targetPos) {
+		Optional<BlockPos> nearby = resolveSafeLanding(world, targetPos);
+		if (nearby.isPresent()) {
+			return Optional.of(new LandingResult(worldKey, nearby.get(), FallbackKind.TARGET));
+		}
+
+		Optional<BlockPos> ownHome = safeHomeLocation(IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(player.getUUID()));
+		if (ownHome.isPresent()) {
+			Island ownIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(player.getUUID()).orElseThrow();
+			return Optional.of(new LandingResult(ownIsland.getDimension(), ownHome.get(), FallbackKind.OWN_HOME));
+		}
+
+		Optional<BlockPos> spawnHome = safeHomeLocation(IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(Island.SERVER_OWNER_UUID));
+		if (spawnHome.isPresent()) {
+			Island spawnIsland = IslandCoreMod.ISLAND_REGISTRY.getIslandByOwner(Island.SERVER_OWNER_UUID).orElseThrow();
+			return Optional.of(new LandingResult(spawnIsland.getDimension(), spawnHome.get(), FallbackKind.SPAWN_HOME));
+		}
+
+		return Optional.empty();
+	}
+
+	// null/not-yet-loaded-world/unsafe home all resolve the same way here: "not a usable fallback" —
+	// unlike requestHome/requestSpawn, this never self-corrects an unsafe home (that's a deliberate
+	// action's job, not a fallback search's).
+	private Optional<BlockPos> safeHomeLocation(Optional<Island> maybeIsland) {
+		if (maybeIsland.isEmpty()) {
+			return Optional.empty();
+		}
+		Island island = maybeIsland.get();
+		BlockPos home = island.getHomeLocation();
+		if (home == null) {
+			return Optional.empty();
+		}
+		ServerLevel homeWorld = server != null ? server.getLevel(island.getDimension()) : null;
+		if (homeWorld == null || !SafeLandingChecker.isSafe(homeWorld, home)) {
+			return Optional.empty();
+		}
+		return Optional.of(home);
 	}
 
 	@Override
@@ -275,6 +487,14 @@ public class TeleportManagerImpl implements TeleportManager {
 				IslandCoreMod.PERMISSION_PROVIDER.getRtpCooldownSeconds(playerUuid));
 	}
 
+	@Override
+	public long getDimensionCooldownRemainingSeconds(UUID playerUuid, ResourceLocation dimensionId) {
+		if (dimensionId.equals(IslandCoreMod.FARMING_CONFIG.getTargetDimension())) {
+			return getFarmingCooldownRemainingSeconds(playerUuid);
+		}
+		return 0;
+	}
+
 	private static long remainingCooldownSeconds(UUID playerUuid, Map<UUID, Instant> lastAt, String bypassPermission, long cooldownSeconds) {
 		if (IslandCoreMod.PERMISSION_PROVIDER.hasPermission(playerUuid, bypassPermission)) {
 			return 0;
@@ -319,7 +539,7 @@ public class TeleportManagerImpl implements TeleportManager {
 			if (teleport.ticksRemaining > 0) {
 				if (teleport.ticksRemaining % 20 == 0) {
 					int secondsRemaining = teleport.ticksRemaining / 20;
-					player.sendSystemMessage(Component.literal(secondsRemaining + "...").withStyle(ChatFormatting.GREEN));
+					player.sendSystemMessage(ServerLang.of(player, secondsRemaining + "...", secondsRemaining + "...").copy().withStyle(ChatFormatting.GREEN));
 				}
 				continue;
 			}
@@ -332,25 +552,51 @@ public class TeleportManagerImpl implements TeleportManager {
 	private void completeTeleport(ServerPlayer player, PendingTeleport teleport) {
 		ServerLevel world = server != null ? server.getLevel(teleport.targetDimension) : null;
 		if (world == null) {
-			player.sendSystemMessage(Component.literal("No se ha podido completar el teletransporte: dimensión no disponible."));
+			player.sendSystemMessage(ServerLang.of(player, "No se ha podido completar el teletransporte: dimensión no disponible.", "Couldn't complete the teleport: dimension not available."));
 			return;
 		}
 
 		boolean success = backend.teleport(player, world, teleport.targetPos);
 		if (!success) {
-			player.sendSystemMessage(Component.literal("No se ha podido completar el teletransporte."));
+			player.sendSystemMessage(ServerLang.of(player, "No se ha podido completar el teletransporte.", "Couldn't complete the teleport."));
 			return;
 		}
 
-		if (teleport.kind == PendingTeleport.Kind.SPAWN) {
-			lastSpawnAt.put(teleport.playerUuid, Instant.now());
-			player.sendSystemMessage(Component.literal("¡Teletransportado al spawn!"));
-		} else if (teleport.kind == PendingTeleport.Kind.FARMING) {
-			lastFarmingAt.put(teleport.playerUuid, Instant.now());
-			player.sendSystemMessage(Component.literal("¡Teletransportado a la zona de farmeo!"));
-		} else {
-			lastHomeAt.put(teleport.playerUuid, Instant.now());
-			player.sendSystemMessage(Component.literal("¡Teletransportado a tu isla!"));
+		switch (teleport.kind) {
+			case SPAWN -> {
+				lastSpawnAt.put(teleport.playerUuid, Instant.now());
+				player.sendSystemMessage(ServerLang.of(player, "¡Teletransportado al spawn!", "Teleported to spawn!"));
+			}
+			case FARMING -> {
+				lastFarmingAt.put(teleport.playerUuid, Instant.now());
+				player.sendSystemMessage(ServerLang.of(player, "¡Teletransportado a la zona de farmeo!", "Teleported to the farming zone!"));
+			}
+			case DIMENSION -> {
+				// No cooldown map to update (see requestDimensionTeleport) — displayName is re-fetched
+				// here rather than stored on PendingTeleport, same "resolve fresh, don't cache"
+				// approach the rest of this class already takes with island/dimension state.
+				String displayName = IslandCoreMod.DIMENSION_REGISTRY.getDimension(teleport.targetDimension.location())
+						.map(DimensionDefinition::getDisplayName)
+						.orElse(teleport.targetDimension.location().getPath());
+				player.sendSystemMessage(ServerLang.of(player, "¡Teletransportado a " + displayName + "!", "Teleported to " + displayName + "!"));
+			}
+			// No cooldown charged for either rescue kind — this wasn't the deliberate action its
+			// cooldown protects, the target dimension simply had nowhere safe to land at all (see
+			// resolveDynamicDimensionLanding) — same "safety net, not a chosen action" reasoning
+			// VoidRescueListener already uses.
+			case RESCUE_HOME -> player.sendSystemMessage(ServerLang.of(player,
+					"No se encontró ningún lugar seguro en el destino; se te ha teletransportado a tu isla en su lugar.",
+					"No safe spot was found at the destination; you were teleported to your island instead."));
+			case RESCUE_SPAWN -> player.sendSystemMessage(ServerLang.of(player,
+					"No se encontró ningún lugar seguro en el destino; se te ha teletransportado al spawn en su lugar.",
+					"No safe spot was found at the destination; you were teleported to spawn instead."));
+			case HOME -> {
+				lastHomeAt.put(teleport.playerUuid, Instant.now());
+				player.sendSystemMessage(ServerLang.of(player, "¡Teletransportado a tu isla!", "Teleported to your island!"));
+			}
+			// No cooldown map to update, same as DIMENSION — a fixed vanilla destination, but not a
+			// DIMENSION_REGISTRY entry, so it doesn't reuse the DIMENSION case's display-name lookup.
+			case OVERWORLD -> player.sendSystemMessage(ServerLang.of(player, "¡Teletransportado al Overworld!", "Teleported to the Overworld!"));
 		}
 	}
 
@@ -363,7 +609,7 @@ public class TeleportManagerImpl implements TeleportManager {
 
 		ServerPlayer player = resolvePlayer(playerUuid);
 		if (player != null) {
-			player.sendSystemMessage(Component.literal("Teletransporte cancelado: " + reason + "."));
+			player.sendSystemMessage(ServerLang.of(player, "Teletransporte cancelado: " + reason + ".", "Teleport cancelled: " + reason + "."));
 		}
 	}
 
